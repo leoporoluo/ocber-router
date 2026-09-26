@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OCBer Router</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+
+      body {
+        padding: 12px;
+        box-sizing: border-box;
+        background: var(--oc-bg);
+        color: var(--oc-fg);
+        font-family: var(--oc-font);
+      }
+
+      #root {
+        height: 100%;
+      }
+
+      .oc-root {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 100%;
+      }
+
+      .oc-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .oc-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+
+      .oc-sub {
+        margin: 2px 0 0;
+        font-size: 0.75rem;
+        color: var(--oc-muted);
+      }
+
+      .oc-mono {
+        font-family: var(--oc-mono);
+        font-size: 0.75rem;
+        word-break: break-all;
+      }
+
+      .oc-card {
+        border: 1px solid var(--oc-border);
+        background: var(--oc-muted-surface);
+        border-radius: var(--oc-radius);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .oc-card-title {
+        margin: 0;
+        font-size: 0.8125rem;
+        font-weight: 600;
+      }
+
+      .oc-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .oc-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .oc-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .oc-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: 8px;
+      }
+
+      .oc-stat {
+        border: 1px solid var(--oc-border);
+        border-radius: var(--oc-radius);
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+
+      .oc-stat-value {
+        font-size: 1.125rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .oc-stat-label {
+        font-size: 0.6875rem;
+        color: var(--oc-muted);
+      }
+
+      .oc-stat-sub {
+        font-size: 0.6875rem;
+        color: var(--oc-muted);
+      }
+
+      .oc-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 2px;
+        height: 72px;
+        padding-top: 4px;
+      }
+
+      .oc-bar {
+        flex: 1 1 0;
+        min-width: 2px;
+        background: var(--oc-primary);
+        border-radius: 2px 2px 0 0;
+        opacity: 0.85;
+      }
+
+      .oc-chart-axis {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.625rem;
+        color: var(--oc-muted);
+      }
+
+      .oc-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .oc-item {
+        border: 1px solid var(--oc-border);
+        border-radius: var(--oc-radius);
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .oc-item-main {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .oc-item-title {
+        font-size: 0.8125rem;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .oc-item-sub {
+        font-size: 0.6875rem;
+        color: var(--oc-muted);
+      }
+
+      .oc-avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        object-fit: contain;
+        background: var(--oc-subtle);
+        flex: none;
+      }
+
+      .oc-flex {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .oc-grow {
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+
+      .oc-scroll {
+        max-height: 320px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .oc-muted {
+        color: var(--oc-muted);
+        font-size: 0.75rem;
+      }
+
+      .oc-num {
+        font-variant-numeric: tabular-nums;
+        font-size: 0.75rem;
+        color: var(--oc-muted);
+        white-space: nowrap;
+      }
+
+      .oc-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border: 1px solid var(--oc-border);
+        border-radius: 999px;
+        padding: 1px 8px;
+        font-size: 0.6875rem;
+        color: var(--oc-muted);
+      }
+
+      .oc-empty {
+        padding: 12px 0;
+        text-align: center;
+        color: var(--oc-muted);
+        font-size: 0.8125rem;
+      }
+
+      .oc-notice:empty {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

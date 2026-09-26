@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["panel/**/*.ts", "service/**/*.ts", "src/**/*.ts", "scripts/**/*.mjs"]
+}

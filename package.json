@@ -1,0 +1,46 @@
+{
+  "name": "ocber-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "OpenChamber extension: an OpenAI-compatible local router with a CodeBuddy supplier family (rail panel + local service).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leoporoluo/ocber-router.git"
+  },
+  "homepage": "https://github.com/leoporoluo/ocber-router#readme",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.0.0"
+    },
+    "contributes": {
+      "panel": {
+        "id": "ocber-router",
+        "name": "OCBer Router",
+        "icon": "route-line",
+        "entry": "panel/index.html"
+      },
+      "page": true,
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host"
+      }
+    }
+  },
+  "scripts": {
+    "build": "bun run build:panel && bun run build:service",
+    "build:panel": "bunx openchamber-guest-bundle panel/main.ts panel/main.js",
+    "build:service": "bunx openchamber-guest-bundle --node service/main.ts service/main.js",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@openchamber/sdk": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "^5.6.0"
+  }
+}
