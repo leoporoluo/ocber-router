@@ -2196,7 +2196,7 @@ class SettingsStore {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.1";
+var VERSION = "0.1.2";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
@@ -2353,12 +2353,16 @@ class App {
       name,
       targets: targets.map((raw) => {
         const slash = raw.indexOf("/");
-        if (slash <= 0)
-          return { raw, supplier: "", model: "", ok: false };
-        const supplier = this.supplierByAlias(raw.slice(0, slash));
-        if (supplier === undefined)
-          return { raw, supplier: raw.slice(0, slash), model: raw.slice(slash + 1), ok: false };
-        return { raw, supplier, model: raw.slice(slash + 1), ok: true };
+        if (slash > 0) {
+          const supplier = this.supplierByAlias(raw.slice(0, slash));
+          if (supplier === undefined)
+            return { raw, supplier: raw.slice(0, slash), model: raw.slice(slash + 1), ok: false };
+          return { raw, supplier, model: raw.slice(slash + 1), ok: true };
+        }
+        const owners = this.activeRuntimes().filter((r) => this.enabledModelIds(r.module.id).includes(raw));
+        if (owners.length > 0)
+          return { raw, supplier: owners[0].module.id, model: raw, ok: true };
+        return { raw, supplier: "", model: "", ok: false };
       })
     };
   }

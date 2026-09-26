@@ -26,7 +26,7 @@ import type {
   SupplierView,
 } from '../shared/types.ts'
 
-export const VERSION = '0.1.1'
+export const VERSION = '0.1.2'
 
 export interface SupplierRuntime {
   module: SupplierModule
@@ -220,10 +220,16 @@ export class App {
       name,
       targets: targets.map((raw) => {
         const slash = raw.indexOf('/')
-        if (slash <= 0) return { raw, supplier: '', model: '', ok: false }
-        const supplier = this.supplierByAlias(raw.slice(0, slash))
-        if (supplier === undefined) return { raw, supplier: raw.slice(0, slash), model: raw.slice(slash + 1), ok: false }
-        return { raw, supplier, model: raw.slice(slash + 1), ok: true }
+        if (slash > 0) {
+          const supplier = this.supplierByAlias(raw.slice(0, slash))
+          if (supplier === undefined) return { raw, supplier: raw.slice(0, slash), model: raw.slice(slash + 1), ok: false }
+          return { raw, supplier, model: raw.slice(slash + 1), ok: true }
+        }
+        // 裸模型名：按启用的模型目录找归属供应商（首个命中即视为有效），
+        // 这样用户写 `deepseek-v4.1-flash` 也能直接用，不必记别名前缀。
+        const owners = this.activeRuntimes().filter((r) => this.enabledModelIds(r.module.id).includes(raw))
+        if (owners.length > 0) return { raw, supplier: owners[0]!.module.id, model: raw, ok: true }
+        return { raw, supplier: '', model: '', ok: false }
       }),
     }
   }

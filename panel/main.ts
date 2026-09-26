@@ -104,7 +104,7 @@ const COPY = {
     comboName: '组合名',
     comboTargets: '目标（逗号分隔，形如 codebuddy/glm-5.3）',
     comboSave: '保存组合',
-    comboHint: '建好的组合会出现在 /v1/models，可直接当模型名用；按顺序回退。',
+    comboHint: '目标按顺序回退；写 `codebuddy/glm-5.3` 精确指定供应商，或直接写不带前缀的模型名（唯一命中时自动归属）。改完点「保存组合」。',
     noCombos: '还没有组合。',
     invalidTarget: '无效目标',
     jobLogin: '登录',
