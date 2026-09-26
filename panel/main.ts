@@ -123,8 +123,17 @@ const COPY = {
     failed: '失败',
     requestWord: '请求',
     modelWord: '模型',
-    copyProvider: '复制 provider 配置',
-    providerHint: '粘贴到 opencode.json（或在 Casleo 里更新）。新建的模型/组合要等 OpenCode 重新拉取模型或重启后才会出现在模型选择里。',
+    opencodeTitle: 'OpenCode 同步',
+    opencodeSync: '自动写入 provider 配置',
+    opencodeSyncHint: '把本端点写成 opencode.json 里的 providers.ocber（只改这一个键，其余内容原样保留）。同步后重启 OpenCode（或重新加载模型）即可在模型选择里看到模型与组合。',
+    syncNow: '立即同步',
+    syncAt: '上次同步',
+    syncNever: '从未',
+    syncModels: '模型数',
+    syncFailed: '同步失败',
+    edit: '编辑',
+    editCancel: '取消编辑',
+    editingCombo: '正在编辑',
   },
   en: {
     title: 'OCBer Router',
@@ -210,8 +219,17 @@ const COPY = {
     failed: 'failed',
     requestWord: 'requests',
     modelWord: 'models',
-    copyProvider: 'Copy provider config',
-    providerHint: 'Paste into opencode.json (or update it in Casleo). New models/combos appear in the picker only after OpenCode refetches models or restarts.',
+    opencodeTitle: 'OpenCode sync',
+    opencodeSync: 'Write provider config automatically',
+    opencodeSyncHint: 'Writes this endpoint as providers.ocber in opencode.json (that key only; everything else stays as is). Restart OpenCode (or reload models) to see the models and combos in the picker.',
+    syncNow: 'Sync now',
+    syncAt: 'Last sync',
+    syncNever: 'never',
+    syncModels: 'Models',
+    syncFailed: 'Sync failed',
+    edit: 'Edit',
+    editCancel: 'Cancel edit',
+    editingCombo: 'Editing',
   },
 } as const
 
@@ -835,7 +853,13 @@ function renderModelRow(supplierId: string, model: ModelView): HTMLElement {
   const item = el('div', 'oc-item-main')
   const info = el('div', 'oc-grow')
   info.append(el('div', 'oc-item-title', model.id))
-  const meta = [model.custom ? copy.custom : '', model.context_length !== undefined ? `${fmtTokens(model.context_length)} ctx` : ''].filter((x) => x !== '').join(' · ')
+  const ctx =
+    model.context_length === undefined
+      ? ''
+      : model.context_length < 10_000
+        ? `${Math.round(model.context_length)}K ctx`
+        : `${fmtTokens(model.context_length)} ctx`
+  const meta = [model.custom ? copy.custom : '', ctx].filter((x) => x !== '').join(' · ')
   if (meta !== '') info.append(el('div', 'oc-item-sub', meta))
   const right = el('div', 'oc-actions')
   if (model.custom) {
@@ -910,6 +934,9 @@ function mountSpinnerInline(label: string): HTMLElement {
 // 组合
 // ---------------------------------------------------------------------------
 
+/** 组合表单草稿（模块级：自动刷新/重画不丢正在输入的内容）。 */
+let comboDraft: { name: string; targets: string; editing: string | null } = { name: '', targets: '', editing: null }
+
 function renderCombos(): HTMLElement {
   const wrap = el('div')
   wrap.style.display = 'flex'
@@ -922,49 +949,74 @@ function renderCombos(): HTMLElement {
   for (const combo of combos) listNodes.push(renderComboItem(combo))
   wrap.append(cardWithTitle(copy.combosTitle, null, listNodes))
 
-  let nameDraft = ''
-  let targetsDraft = ''
   const nameWrap = el('div')
   const nameField = mountTextField(nameWrap, {
-    value: '',
+    value: comboDraft.name,
     label: copy.comboName,
     mono: true,
     onChange: (value) => {
-      nameDraft = value
+      comboDraft.name = value
       nameField.update({ value })
     },
   })
   const targetsWrap = el('div')
   const targetsField = mountTextField(targetsWrap, {
-    value: '',
+    value: comboDraft.targets,
     label: copy.comboTargets,
     helper: copy.comboHint,
     multiline: true,
     rows: 3,
     mono: true,
     onChange: (value) => {
-      targetsDraft = value
+      comboDraft.targets = value
       targetsField.update({ value })
     },
   })
-  const saveWrap = el('div')
+
+  const actions = el('div', 'oc-actions')
+  const saveWrap = el('span')
   mountButton(saveWrap, {
     label: copy.comboSave,
     variant: 'default',
     size: 'sm',
     onClick: () => {
-      const name = nameDraft.trim()
+      const name = comboDraft.name.trim()
       if (name === '') return
-      const targets = targetsDraft
+      const targets = comboDraft.targets
         .split(/[,，\n]/)
         .map((t) => t.trim())
         .filter((t) => t !== '')
-      void api('POST', '/api/combos/set', { name, targets })
-        .then(() => reload())
+      void api<{ combo?: ComboResolved }>('POST', '/api/combos/set', { name, targets })
+        .then((result) => {
+          const invalid = (result.combo?.targets ?? []).filter((t) => !t.ok)
+          if (invalid.length > 0) {
+            notify(`目标无法解析：${invalid.map((t) => t.raw).join('、')}（可写 codebuddy/<模型名>，或检查拼写）`, 'warning')
+          }
+          comboDraft = { name: '', targets: '', editing: null }
+          return reload()
+        })
         .catch((error) => notify(describeError(error), 'error'))
     },
   })
-  wrap.append(card([nameWrap, targetsWrap, saveWrap]))
+  actions.append(saveWrap)
+  if (comboDraft.editing !== null) {
+    const cancelWrap = el('span')
+    mountButton(cancelWrap, {
+      label: copy.editCancel,
+      variant: 'ghost',
+      size: 'sm',
+      onClick: () => {
+        comboDraft = { name: '', targets: '', editing: null }
+        renderBody()
+      },
+    })
+    actions.append(cancelWrap)
+  }
+
+  const formChildren: HTMLElement[] = [nameWrap, targetsWrap]
+  if (comboDraft.editing !== null) formChildren.unshift(el('div', 'oc-item-sub', `${copy.editingCombo}：${comboDraft.editing}`))
+  formChildren.push(actions)
+  wrap.append(card(formChildren))
   return wrap
 }
 
@@ -974,18 +1026,33 @@ function renderComboItem(combo: ComboResolved): HTMLElement {
   const info = el('div', 'oc-grow')
   info.append(el('div', 'oc-item-title', combo.name))
   info.append(el('div', 'oc-item-sub', combo.targets.map((t) => (t.ok ? t.raw : `${t.raw}（${copy.invalidTarget}）`)).join(' → ') || copy.noData))
-  const del = el('span')
-  mountButton(del, {
+  const actions = el('div', 'oc-actions')
+  const editWrap = el('span')
+  mountButton(editWrap, {
+    label: copy.edit,
+    variant: 'outline',
+    size: 'xs',
+    onClick: () => {
+      comboDraft = { name: combo.name, targets: combo.targets.map((t) => t.raw).join(', '), editing: combo.name }
+      renderBody()
+    },
+  })
+  const delWrap = el('span')
+  mountButton(delWrap, {
     label: copy.delete,
     variant: 'ghost',
     size: 'xs',
     onClick: () => {
       void api('POST', '/api/combos/remove', { name: combo.name })
-        .then(() => reload())
+        .then(() => {
+          if (comboDraft.editing === combo.name) comboDraft = { name: '', targets: '', editing: null }
+          return reload()
+        })
         .catch((error) => notify(describeError(error), 'error'))
     },
   })
-  main.append(info, del)
+  actions.append(editWrap, delWrap)
+  main.append(info, actions)
   item.append(main)
   return item
 }
@@ -993,44 +1060,6 @@ function renderComboItem(combo: ComboResolved): HTMLElement {
 // ---------------------------------------------------------------------------
 // 端点与密钥
 // ---------------------------------------------------------------------------
-
-/** 当前对外暴露的模型 id（与服务端 /v1/models 同口径）。 */
-function modelIdsForProvider(): string[] {
-  const out = new Set<string>()
-  const bare = new Map<string, number>()
-  for (const supplier of state?.suppliers ?? []) {
-    if (!supplier.enabled) continue
-    for (const model of supplier.models) {
-      bare.set(model, (bare.get(model) ?? 0) + 1)
-      out.add(`${supplier.alias}/${model}`)
-    }
-  }
-  for (const [model, count] of bare) if (count === 1) out.add(model)
-  for (const combo of state?.combos ?? []) {
-    if (combo.targets.length > 0 && combo.targets.every((t) => t.ok)) out.add(combo.name)
-  }
-  return [...out]
-}
-
-/** 生成可直接粘贴到 opencode.json 的 provider 片段（含当前全部模型与组合）。 */
-function providerSnippet(): string {
-  const models: Record<string, { name: string }> = {}
-  for (const id of modelIdsForProvider()) models[id] = { name: id }
-  return JSON.stringify(
-    {
-      provider: {
-        ocber: {
-          npm: '@ai-sdk/openai-compatible',
-          name: 'OCBer Router',
-          options: { baseURL: state?.endpoint ?? 'http://127.0.0.1:3080/v1' },
-          models,
-        },
-      },
-    },
-    null,
-    2,
-  )
-}
 
 function renderEndpoint(): HTMLElement {
   const wrap = el('div')
@@ -1094,23 +1123,38 @@ function renderEndpoint(): HTMLElement {
 
   wrap.append(cardWithTitle(copy.endpoint, null, [endpointRow, portRow, requireRow]))
 
-  // provider 配置片段：把当前模型/组合给到 OpenCode（含新建组合，避免「组合不出现」）
-  const providerRow = el('div', 'oc-flex')
-  const providerHint = el('div', 'oc-muted oc-grow', copy.providerHint)
-  const providerCopy = el('span')
-  mountButton(providerCopy, {
-    label: copy.copyProvider,
+  // OpenCode provider 自动同步（服务的 opencode-sync 写 opencode.json 的 providers.ocber）
+  const sync = state?.opencode
+  const syncRow = toggleRow(copy.opencodeSync, copy.opencodeSyncHint, sync?.enabled ?? false, (value) => {
+    void api('POST', '/api/settings', { opencodeSync: value })
+      .then(() => reload())
+      .catch((error) => notify(describeError(error), 'error'))
+  })
+  const syncStatusRow = el('div', 'oc-row')
+  const syncInfo = el('div', 'oc-grow')
+  const syncState =
+    sync?.error !== undefined
+      ? `${copy.syncFailed}：${sync.error}`
+      : `${copy.syncAt}：${sync !== undefined && sync.syncedAt > 0 ? new Date(sync.syncedAt).toLocaleString() : copy.syncNever} · ${copy.syncModels} ${sync?.modelCount ?? 0}`
+  syncInfo.append(el('div', 'oc-item-sub', syncState))
+  syncInfo.append(el('div', 'oc-mono', sync?.path ?? '~/.config/opencode/opencode.json'))
+  const syncNowWrap = el('span')
+  mountButton(syncNowWrap, {
+    label: copy.syncNow,
     variant: 'outline',
     size: 'sm',
     onClick: () => {
-      void host
-        .writeClipboard(providerSnippet())
-        .then(() => notify(copy.copied, 'success'))
+      void api<{ opencode: { error?: string; modelCount: number } }>('POST', '/api/opencode/sync')
+        .then((result) => {
+          if (result.opencode?.error !== undefined) notify(`${copy.syncFailed}：${result.opencode.error}`, 'error')
+          else notify(`${copy.syncAt}：${result.opencode?.modelCount ?? 0} ${copy.syncModels}`, 'success')
+          return reload()
+        })
         .catch((error) => notify(describeError(error), 'error'))
     },
   })
-  providerRow.append(providerHint, providerCopy)
-  wrap.append(card([providerRow]))
+  syncStatusRow.append(syncInfo, syncNowWrap)
+  wrap.append(cardWithTitle(copy.opencodeTitle, null, [syncRow, syncStatusRow]))
 
   // API keys
   let keyNameDraft = ''

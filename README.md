@@ -68,32 +68,38 @@ curl -X POST http://127.0.0.1:3080/v1/chat/completions \
 
 ### 在 OpenCode / OpenChamber 里用
 
-OpenChamber 自带 OpenCode，可把本端点注册成自定义 provider（`opencode.json`）：
+面板「端点与密钥 → **OpenCode 同步**」默认开启：服务会把本端点写成
+`~/.config/opencode/opencode.json` 里 `providers.ocber` 的 provider
+（只改这一个键，其余配置原样保留），模型与组合自动跟进。重启 OpenCode /
+重新加载模型后即可在模型选择里直接选。
+
+想手动配置时，`opencode.json` 里的等价形态是：
 
 ```jsonc
 {
-  "provider": {
+  "providers": {
     "ocber": {
-      "npm": "@ai-sdk/openai-compatible",
       "name": "OCBer Router",
-      "options": { "baseURL": "http://127.0.0.1:3080/v1" },
+      "package": "aisdk:@ai-sdk/openai-compatible",
+      "settings": { "baseURL": "http://127.0.0.1:3080/v1" },
       "models": {
-        "codebuddy/glm-5.3": { "name": "GLM-5.3 (CodeBuddy)" },
-        "codebuddy-en/gpt-5.5": { "name": "GPT-5.5 (WorkBuddy)" }
+        "codebuddy/glm-5.3": { "modelID": "codebuddy/glm-5.3", "name": "codebuddy/glm-5.3" }
       }
     }
   }
 }
 ```
 
-（`requireApiKey` 打开后，在 provider 的 `options.apiKey` 填面板里创建的 Key。）
+（`requireApiKey` 打开后，同步会写入一个库内启用的 Key 作为 `settings.apiKey`。）
 
 ## 常见问题
 
-- **新建的模型/组合在 OpenCode（或 Casleo）的模型选择里看不到**：OpenCode 只在启动 /
-  重新拉取 provider 模型时读 `/v1/models`。点面板「端点与密钥 → 复制 provider 配置」，
-  把生成的片段更新到 `opencode.json`（或在 Casleo 里更新 provider），再重启 OpenCode /
-  重新拉取模型即可。
+- **新建的模型/组合在 OpenCode / Casleo 的模型选择里看不到**：面板「端点与密钥 → OpenCode 同步」
+  默认开启，会把本端点写成 `~/.config/opencode/opencode.json` 里 `providers.ocber`
+  的 provider（只改这一个键，其余内容原样保留）。新的模型/组合在开关打开时自动写入；
+  写完重启 OpenCode（或重新加载模型）即可看到。关掉开关或点「立即同步」也可手动控制。
+  注意：组合目标必须能解析（写 `codebuddy/glm-5.3`，或写不带前缀的模型名）；
+  面板会把解析不了的目标标成「无效目标」，这类目标不会进 provider。
 - **签到或跑了几次请求后积分数字没变**：积分在服务侧有 1 分钟缓存，且面板显示两位
   小数；点一次「刷新」就会拿到最新值。
 - **刷新按钮转个不停**：旧版本会把加载状态画死，`0.1.1` 起已修复（加载中才转）。

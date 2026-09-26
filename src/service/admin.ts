@@ -122,6 +122,7 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
   if (method === 'POST' && path === '/api/keys') {
     const body = await readBody(req)
     const entry = app.keys.create(str(body.name))
+    app.afterCatalogChange()
     writeJson(res, 200, { entry: { ...entry, masked: entry.key.slice(0, 6) + '…' + entry.key.slice(-4) } })
     return
   }
@@ -129,21 +130,26 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
   // POST /api/keys/toggle  { id, isActive }
   if (method === 'POST' && path === '/api/keys/toggle') {
     const body = await readBody(req)
-    writeJson(res, 200, { ok: app.keys.setActive(str(body.id), bool(body.isActive)) })
+    const ok = app.keys.setActive(str(body.id), bool(body.isActive))
+    app.afterCatalogChange()
+    writeJson(res, 200, { ok })
     return
   }
 
   // POST /api/keys/delete  { id }
   if (method === 'POST' && path === '/api/keys/delete') {
     const body = await readBody(req)
-    writeJson(res, 200, { ok: app.keys.remove(str(body.id)) })
+    const ok = app.keys.remove(str(body.id))
+    app.afterCatalogChange()
+    writeJson(res, 200, { ok })
     return
   }
 
-  // POST /api/settings  { requireApiKey?, port? }
+  // POST /api/settings  { requireApiKey?, port?, opencodeSync? }
   if (method === 'POST' && path === '/api/settings') {
     const body = await readBody(req)
     if (body.requireApiKey !== undefined) app.keys.requireApiKey = bool(body.requireApiKey)
+    if (body.opencodeSync !== undefined) app.settings.setOpencodeSync(bool(body.opencodeSync))
     if (body.port !== undefined) {
       const port = Number(body.port)
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
@@ -152,10 +158,18 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
       }
       app.settings.setPort(port)
       const actual = await deps.rebindPort(port)
+      app.afterCatalogChange()
       writeJson(res, 200, { ok: true, port: actual, settings: app.settingsView() })
       return
     }
+    app.afterCatalogChange()
     writeJson(res, 200, { ok: true, settings: app.settingsView() })
+    return
+  }
+
+  // POST /api/opencode/sync —— 立即写一次 provider 配置
+  if (method === 'POST' && path === '/api/opencode/sync') {
+    writeJson(res, 200, { ok: true, opencode: app.syncOpencode(true) })
     return
   }
 
@@ -169,9 +183,11 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
       return
     }
     const body = await readBody(req)
+    const sync = (): void => app.afterCatalogChange()
     switch (op) {
       case 'enabled':
         app.config.setEnabled(id, bool(body.enabled))
+        sync()
         writeJson(res, 200, { ok: true })
         return
       case 'alias': {
@@ -184,6 +200,7 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
           }
         }
         app.config.setAlias(id, alias)
+        sync()
         writeJson(res, 200, { ok: true, alias: app.aliasOf(id) })
         return
       }
@@ -198,18 +215,22 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
         return
       case 'models/toggle':
         app.config.setModelEnabled(id, str(body.id), bool(body.enabled))
+        sync()
         writeJson(res, 200, { ok: true })
         return
       case 'models/all':
         app.config.setAllModelsEnabled(id, bool(body.enabled), app.modelViews(id).map((m) => m.id))
+        sync()
         writeJson(res, 200, { ok: true })
         return
       case 'models/custom':
         app.config.addCustomModel(id, str(body.id))
+        sync()
         writeJson(res, 200, { ok: true })
         return
       case 'models/custom/remove':
         app.config.removeCustomModel(id, str(body.id))
+        sync()
         writeJson(res, 200, { ok: true })
         return
       default:
@@ -227,6 +248,7 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
       return
     }
     app.combos.set(name, strArray(body.targets))
+    app.afterCatalogChange()
     writeJson(res, 200, { ok: true, combo: app.resolveCombo(name) })
     return
   }
@@ -234,7 +256,9 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
   // POST /api/combos/remove  { name }
   if (method === 'POST' && path === '/api/combos/remove') {
     const body = await readBody(req)
-    writeJson(res, 200, { ok: app.combos.remove(str(body.name)) })
+    const ok = app.combos.remove(str(body.name))
+    app.afterCatalogChange()
+    writeJson(res, 200, { ok })
     return
   }
 

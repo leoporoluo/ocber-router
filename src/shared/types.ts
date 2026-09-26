@@ -135,6 +135,19 @@ export interface SettingsView {
   requireApiKey: boolean
   /** 期望监听端口（实际端口在 state.endpointPort；冲突时会自动顺延）。 */
   port: number
+  /** 自动把 provider 配置写进 ~/.config/opencode/opencode.json。 */
+  opencodeSync: boolean
+}
+
+/** OpenCode provider 同步状态。 */
+export interface OpencodeSyncView {
+  enabled: boolean
+  path: string
+  exists: boolean
+  /** 上次成功写入时间（0 = 从未）。 */
+  syncedAt: number
+  modelCount: number
+  error?: string
 }
 
 /** 面板启动时拉一次的全量状态。 */
@@ -150,6 +163,7 @@ export interface StateView {
   suppliers: SupplierView[]
   combos: ComboResolved[]
   keys: KeyView[]
+  opencode: OpencodeSyncView
   /** 服务侧当前时间，面板做轻量时钟校准。 */
   now: number
 }

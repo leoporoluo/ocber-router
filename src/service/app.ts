@@ -13,6 +13,7 @@ import { profile as enProfile } from './suppliers/codebuddy/en.ts'
 import { AccountPool } from './account-pool.ts'
 import { CredentialStore, SupplierConfigStore, CombosStore, KeysStore, SettingsStore, DEFAULT_PORT } from './store.ts'
 import { UsageStore } from './usage.ts'
+import { syncOpencode } from './opencode-sync.ts'
 import type {
   AccountView,
   CheckinResult,
@@ -20,13 +21,14 @@ import type {
   JobType,
   JobView,
   ModelView,
+  OpencodeSyncView,
   SettingsView,
   StateView,
   SupplierDetailView,
   SupplierView,
 } from '../shared/types.ts'
 
-export const VERSION = '0.1.2'
+export const VERSION = '0.1.3'
 
 export interface SupplierRuntime {
   module: SupplierModule
@@ -129,7 +131,11 @@ export class App {
 
   /** 后台预热：不阻塞启动，失败静默。 */
   warmupCatalog(): void {
-    for (const r of this.runtimes) void this.refreshCatalog(r.module.id, false).catch(() => {})
+    for (const r of this.runtimes) {
+      void this.refreshCatalog(r.module.id, false)
+        .then(() => this.syncOpencode(false))
+        .catch(() => {})
+    }
   }
 
   catalogEntry(id: string): CatalogEntry | undefined {
@@ -383,21 +389,51 @@ export class App {
   // 面板状态
   // -------------------------------------------------------------------------
 
+  /** 对外 OpenAI 兼容端点。 */
+  endpoint(): string {
+    return `http://127.0.0.1:${this.endpointPort || this.settings.get().port || DEFAULT_PORT}/v1`
+  }
+
+  /** 同步 provider 配置（写 opencode.json）。force=true 无视开关与指纹。 */
+  syncOpencode(force = false): OpencodeSyncView {
+    return syncOpencode(this, force)
+  }
+
+  /** 变更后顺手同步（失败不影响主流程）。 */
+  private syncQuietly(): void {
+    try {
+      this.syncOpencode(false)
+    } catch {
+      // 同步失败由面板的下一次 state 显示
+    }
+  }
+
+  /** 模型/组合/别名/开关变化后调用。 */
+  afterCatalogChange(): void {
+    this.syncOpencode(false)
+  }
+
   settingsView(): SettingsView {
-    return { requireApiKey: this.keys.requireApiKey, port: this.settings.get().port || this.endpointPort || DEFAULT_PORT }
+    return {
+      requireApiKey: this.keys.requireApiKey,
+      port: this.settings.get().port || this.endpointPort || DEFAULT_PORT,
+      opencodeSync: this.settings.get().opencodeSync,
+    }
   }
 
   state(): StateView {
+    const opencode = this.syncOpencode(false)
     return {
       version: VERSION,
       startedAt: this.startedAt,
       dataDir: this.dataDir,
       endpointPort: this.endpointPort,
-      endpoint: `http://127.0.0.1:${this.endpointPort || this.settings.get().port}/v1`,
+      endpoint: this.endpoint(),
       settings: this.settingsView(),
       suppliers: this.supplierViews(),
       combos: this.comboViews(),
       keys: this.keys.list(),
+      opencode,
       now: Date.now(),
     }
   }

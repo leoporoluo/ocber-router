@@ -360,6 +360,11 @@ export class KeysStore {
     return this.keys.some((k) => k.isActive && k.key === bearer)
   }
 
+  /** 第一个启用的 key（同步 provider 配置时用）。 */
+  firstActiveKey(): string | undefined {
+    return this.keys.find((k) => k.isActive)?.key
+  }
+
   private save(): void {
     writeJson(this.file, { keys: this.keys, requireApiKey: this.require })
   }
@@ -377,10 +382,18 @@ function maskKey(k: string): string {
 interface SettingsFile {
   requireApiKey?: boolean
   port?: number
+  opencodeSync?: boolean
+  opencodeSignature?: string
+  opencodeSyncedAt?: number
 }
 
 export interface ServiceSettings {
   port: number
+  /** 自动把 provider 配置写进 ~/.config/opencode/opencode.json（默认开）。 */
+  opencodeSync: boolean
+  /** 上次写入的内容指纹（没变就不重复写）。 */
+  opencodeSignature: string
+  opencodeSyncedAt: number
 }
 
 export const DEFAULT_PORT = 3080
@@ -388,21 +401,53 @@ export const DEFAULT_PORT = 3080
 export class SettingsStore {
   private file: string
   private port: number
+  private opencodeSync: boolean
+  private opencodeSignature: string
+  private opencodeSyncedAt: number
 
   constructor(dataDir: string) {
     this.file = join(dataDir, 'settings.json')
     const raw = readJson<SettingsFile>(this.file)
     const p = Number(raw?.port)
     this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT
+    this.opencodeSync = typeof raw?.opencodeSync === 'boolean' ? raw.opencodeSync : true
+    this.opencodeSignature = typeof raw?.opencodeSignature === 'string' ? raw.opencodeSignature : ''
+    this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === 'number' ? raw.opencodeSyncedAt : 0
   }
 
   get(): ServiceSettings {
-    return { port: this.port }
+    return {
+      port: this.port,
+      opencodeSync: this.opencodeSync,
+      opencodeSignature: this.opencodeSignature,
+      opencodeSyncedAt: this.opencodeSyncedAt,
+    }
   }
 
   setPort(port: number): void {
     if (!Number.isInteger(port) || port <= 0 || port >= 65536) return
     this.port = port
-    writeJson(this.file, { port: this.port })
+    this.save()
+  }
+
+  setOpencodeSync(enabled: boolean): void {
+    this.opencodeSync = enabled
+    this.save()
+  }
+
+  /** 记录一次成功写入的指纹与时间。 */
+  setOpencodeSyncState(signature: string, syncedAt: number): void {
+    this.opencodeSignature = signature
+    this.opencodeSyncedAt = syncedAt
+    this.save()
+  }
+
+  private save(): void {
+    writeJson(this.file, {
+      port: this.port,
+      opencodeSync: this.opencodeSync,
+      opencodeSignature: this.opencodeSignature,
+      opencodeSyncedAt: this.opencodeSyncedAt,
+    })
   }
 }

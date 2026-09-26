@@ -777,23 +777,30 @@ async function handleAdmin(deps, req, res, url) {
   if (method === "POST" && path === "/api/keys") {
     const body = await readBody(req);
     const entry = app.keys.create(str(body.name));
+    app.afterCatalogChange();
     writeJson(res, 200, { entry: { ...entry, masked: entry.key.slice(0, 6) + "…" + entry.key.slice(-4) } });
     return;
   }
   if (method === "POST" && path === "/api/keys/toggle") {
     const body = await readBody(req);
-    writeJson(res, 200, { ok: app.keys.setActive(str(body.id), bool(body.isActive)) });
+    const ok = app.keys.setActive(str(body.id), bool(body.isActive));
+    app.afterCatalogChange();
+    writeJson(res, 200, { ok });
     return;
   }
   if (method === "POST" && path === "/api/keys/delete") {
     const body = await readBody(req);
-    writeJson(res, 200, { ok: app.keys.remove(str(body.id)) });
+    const ok = app.keys.remove(str(body.id));
+    app.afterCatalogChange();
+    writeJson(res, 200, { ok });
     return;
   }
   if (method === "POST" && path === "/api/settings") {
     const body = await readBody(req);
     if (body.requireApiKey !== undefined)
       app.keys.requireApiKey = bool(body.requireApiKey);
+    if (body.opencodeSync !== undefined)
+      app.settings.setOpencodeSync(bool(body.opencodeSync));
     if (body.port !== undefined) {
       const port = Number(body.port);
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
@@ -802,10 +809,16 @@ async function handleAdmin(deps, req, res, url) {
       }
       app.settings.setPort(port);
       const actual = await deps.rebindPort(port);
+      app.afterCatalogChange();
       writeJson(res, 200, { ok: true, port: actual, settings: app.settingsView() });
       return;
     }
+    app.afterCatalogChange();
     writeJson(res, 200, { ok: true, settings: app.settingsView() });
+    return;
+  }
+  if (method === "POST" && path === "/api/opencode/sync") {
+    writeJson(res, 200, { ok: true, opencode: app.syncOpencode(true) });
     return;
   }
   const supplierOp = /^\/api\/suppliers\/([^/]+)\/(.+)$/.exec(path);
@@ -817,9 +830,11 @@ async function handleAdmin(deps, req, res, url) {
       return;
     }
     const body = await readBody(req);
+    const sync = () => app.afterCatalogChange();
     switch (op) {
       case "enabled":
         app.config.setEnabled(id, bool(body.enabled));
+        sync();
         writeJson(res, 200, { ok: true });
         return;
       case "alias": {
@@ -832,6 +847,7 @@ async function handleAdmin(deps, req, res, url) {
           }
         }
         app.config.setAlias(id, alias);
+        sync();
         writeJson(res, 200, { ok: true, alias: app.aliasOf(id) });
         return;
       }
@@ -846,18 +862,22 @@ async function handleAdmin(deps, req, res, url) {
         return;
       case "models/toggle":
         app.config.setModelEnabled(id, str(body.id), bool(body.enabled));
+        sync();
         writeJson(res, 200, { ok: true });
         return;
       case "models/all":
         app.config.setAllModelsEnabled(id, bool(body.enabled), app.modelViews(id).map((m) => m.id));
+        sync();
         writeJson(res, 200, { ok: true });
         return;
       case "models/custom":
         app.config.addCustomModel(id, str(body.id));
+        sync();
         writeJson(res, 200, { ok: true });
         return;
       case "models/custom/remove":
         app.config.removeCustomModel(id, str(body.id));
+        sync();
         writeJson(res, 200, { ok: true });
         return;
       default:
@@ -873,12 +893,15 @@ async function handleAdmin(deps, req, res, url) {
       return;
     }
     app.combos.set(name, strArray(body.targets));
+    app.afterCatalogChange();
     writeJson(res, 200, { ok: true, combo: app.resolveCombo(name) });
     return;
   }
   if (method === "POST" && path === "/api/combos/remove") {
     const body = await readBody(req);
-    writeJson(res, 200, { ok: app.combos.remove(str(body.name)) });
+    const ok = app.combos.remove(str(body.name));
+    app.afterCatalogChange();
+    writeJson(res, 200, { ok });
     return;
   }
   writeJson(res, 404, { error: `未知接口 ${method} ${path}` });
@@ -1032,7 +1055,7 @@ function modelList(app) {
       out.set(m, { id: m, object: "model", created: 0, owned_by: "ocber-router" });
   }
   for (const combo of app.comboViews()) {
-    if (combo.targets.length > 0 && combo.targets.every((t) => t.ok)) {
+    if (combo.targets.some((t) => t.ok)) {
       out.set(combo.name, { id: combo.name, object: "model", created: 0, owned_by: "combo" });
     }
   }
@@ -2164,6 +2187,9 @@ class KeysStore {
       return false;
     return this.keys.some((k) => k.isActive && k.key === bearer2);
   }
+  firstActiveKey() {
+    return this.keys.find((k) => k.isActive)?.key;
+  }
   save() {
     writeJson2(this.file, { keys: this.keys, requireApiKey: this.require });
   }
@@ -2178,25 +2204,157 @@ var DEFAULT_PORT = 3080;
 class SettingsStore {
   file;
   port;
+  opencodeSync;
+  opencodeSignature;
+  opencodeSyncedAt;
   constructor(dataDir) {
     this.file = join2(dataDir, "settings.json");
     const raw = readJson(this.file);
     const p = Number(raw?.port);
     this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
+    this.opencodeSync = typeof raw?.opencodeSync === "boolean" ? raw.opencodeSync : true;
+    this.opencodeSignature = typeof raw?.opencodeSignature === "string" ? raw.opencodeSignature : "";
+    this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === "number" ? raw.opencodeSyncedAt : 0;
   }
   get() {
-    return { port: this.port };
+    return {
+      port: this.port,
+      opencodeSync: this.opencodeSync,
+      opencodeSignature: this.opencodeSignature,
+      opencodeSyncedAt: this.opencodeSyncedAt
+    };
   }
   setPort(port) {
     if (!Number.isInteger(port) || port <= 0 || port >= 65536)
       return;
     this.port = port;
-    writeJson2(this.file, { port: this.port });
+    this.save();
+  }
+  setOpencodeSync(enabled) {
+    this.opencodeSync = enabled;
+    this.save();
+  }
+  setOpencodeSyncState(signature, syncedAt) {
+    this.opencodeSignature = signature;
+    this.opencodeSyncedAt = syncedAt;
+    this.save();
+  }
+  save() {
+    writeJson2(this.file, {
+      port: this.port,
+      opencodeSync: this.opencodeSync,
+      opencodeSignature: this.opencodeSignature,
+      opencodeSyncedAt: this.opencodeSyncedAt
+    });
+  }
+}
+
+// src/service/opencode-sync.ts
+import { existsSync, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { createHash as createHash2 } from "node:crypto";
+import { dirname as dirname3, join as join3 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+var OPENCODE_PROVIDER_ID = "ocber";
+function opencodeConfigPath() {
+  return join3(homedir2(), ".config", "opencode", "opencode.json");
+}
+function normalizeContext(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+    return;
+  return value < 1e4 ? value * 1000 : value;
+}
+function buildModels(app) {
+  const out = {};
+  const bare = new Map;
+  const add = (id, context) => {
+    const limit = normalizeContext(context);
+    out[id] = {
+      modelID: id,
+      name: id,
+      ...limit !== undefined ? { limit: { context: limit } } : {},
+      capabilities: { tools: true, input: ["text", "image"], output: ["text"] }
+    };
+  };
+  for (const supplier of app.activeRuntimes()) {
+    const alias = app.aliasOf(supplier.module.id);
+    for (const model of app.modelViews(supplier.module.id)) {
+      if (!model.enabled)
+        continue;
+      bare.set(model.id, (bare.get(model.id) ?? 0) + 1);
+      add(`${alias}/${model.id}`, model.context_length);
+    }
+  }
+  for (const [model, count] of bare) {
+    if (count === 1)
+      add(model);
+  }
+  for (const combo of app.comboViews()) {
+    if (combo.targets.some((t) => t.ok))
+      add(combo.name);
+  }
+  return out;
+}
+function syncOpencode(app, force = false) {
+  const settings = app.settings.get();
+  const path = opencodeConfigPath();
+  const view = (extra) => ({
+    enabled: settings.opencodeSync,
+    path,
+    exists: existsSync(path),
+    syncedAt: settings.opencodeSyncedAt,
+    modelCount: 0,
+    ...extra
+  });
+  if (!settings.opencodeSync && !force)
+    return view();
+  const models = buildModels(app);
+  const modelCount = Object.keys(models).length;
+  const signature = createHash2("sha1").update(JSON.stringify({ endpoint: app.endpoint(), models: Object.keys(models).sort() })).digest("hex");
+  if (!force && signature === settings.opencodeSignature) {
+    return view({ modelCount, syncedAt: settings.opencodeSyncedAt });
+  }
+  try {
+    let config;
+    if (existsSync(path)) {
+      const raw = readFileSync3(path, "utf8");
+      const parsed = raw.trim() === "" ? {} : JSON.parse(raw);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return view({ modelCount, error: "opencode.json 不是 JSON 对象，已跳过（未改动）" });
+      }
+      config = parsed;
+    } else {
+      config = { $schema: "https://opencode.ai/config.json" };
+    }
+    const existing = config.providers;
+    const providers = existing !== null && typeof existing === "object" && !Array.isArray(existing) ? { ...existing } : {};
+    const activeKey = app.keys.requireApiKey ? app.keys.firstActiveKey() : undefined;
+    providers[OPENCODE_PROVIDER_ID] = {
+      name: "OCBer Router",
+      package: "aisdk:@ai-sdk/openai-compatible",
+      settings: {
+        baseURL: app.endpoint(),
+        ...activeKey !== undefined ? { apiKey: activeKey } : {}
+      },
+      models
+    };
+    config.providers = providers;
+    const dir = dirname3(path);
+    if (dir !== "" && dir !== ".")
+      mkdirSync3(dir, { recursive: true });
+    const tmp = `${path}.ocber.tmp`;
+    writeFileSync3(tmp, `${JSON.stringify(config, null, 2)}
+`, { mode: 384 });
+    renameSync3(tmp, path);
+    const syncedAt = Date.now();
+    app.settings.setOpencodeSyncState(signature, syncedAt);
+    return view({ modelCount, syncedAt, exists: true });
+  } catch (err) {
+    return view({ modelCount, error: err.message });
   }
 }
 
 // src/service/app.ts
-var VERSION = "0.1.2";
+var VERSION = "0.1.3";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
@@ -2273,8 +2431,9 @@ class App {
     return entry;
   }
   warmupCatalog() {
-    for (const r of this.runtimes)
-      this.refreshCatalog(r.module.id, false).catch(() => {});
+    for (const r of this.runtimes) {
+      this.refreshCatalog(r.module.id, false).then(() => this.syncOpencode(false)).catch(() => {});
+    }
   }
   catalogEntry(id) {
     return this.catalog.get(id);
@@ -2494,20 +2653,40 @@ class App {
       }
     }
   }
+  endpoint() {
+    return `http://127.0.0.1:${this.endpointPort || this.settings.get().port || DEFAULT_PORT}/v1`;
+  }
+  syncOpencode(force = false) {
+    return syncOpencode(this, force);
+  }
+  syncQuietly() {
+    try {
+      this.syncOpencode(false);
+    } catch {}
+  }
+  afterCatalogChange() {
+    this.syncOpencode(false);
+  }
   settingsView() {
-    return { requireApiKey: this.keys.requireApiKey, port: this.settings.get().port || this.endpointPort || DEFAULT_PORT };
+    return {
+      requireApiKey: this.keys.requireApiKey,
+      port: this.settings.get().port || this.endpointPort || DEFAULT_PORT,
+      opencodeSync: this.settings.get().opencodeSync
+    };
   }
   state() {
+    const opencode = this.syncOpencode(false);
     return {
       version: VERSION,
       startedAt: this.startedAt,
       dataDir: this.dataDir,
       endpointPort: this.endpointPort,
-      endpoint: `http://127.0.0.1:${this.endpointPort || this.settings.get().port}/v1`,
+      endpoint: this.endpoint(),
       settings: this.settingsView(),
       suppliers: this.supplierViews(),
       combos: this.comboViews(),
       keys: this.keys.list(),
+      opencode,
       now: Date.now()
     };
   }

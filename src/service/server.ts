@@ -183,7 +183,7 @@ function modelList(app: App): Array<{ id: string; object: string; created: numbe
     if (count === 1) out.set(m, { id: m, object: 'model', created: 0, owned_by: 'ocber-router' })
   }
   for (const combo of app.comboViews()) {
-    if (combo.targets.length > 0 && combo.targets.every((t) => t.ok)) {
+    if (combo.targets.some((t) => t.ok)) {
       out.set(combo.name, { id: combo.name, object: 'model', created: 0, owned_by: 'combo' })
     }
   }
