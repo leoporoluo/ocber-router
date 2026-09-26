@@ -1048,7 +1048,7 @@ var REFRESH_MAX_ISSUED_MS = 15 * 24 * 3600000;
 var POLL_INTERVAL_MS = 5000;
 var POLL_TIMEOUT_MS = 5 * 60 * 1000;
 var ALREADY_CHECKED_IN_CODE = 10001;
-var CREDITS_TTL_MS = 10 * 60 * 1000;
+var CREDITS_TTL_MS = 60 * 1000;
 var CREDITS_UNKNOWN = -1;
 var REFILL_GAP_MS = 2 * 24 * 60 * 60 * 1000;
 var NON_CHAT_TAGS = /text-to-image|image-to-image|text-to-video|image-to-video/i;
@@ -2196,7 +2196,7 @@ class SettingsStore {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.0";
+var VERSION = "0.1.1";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
@@ -2322,6 +2322,7 @@ class App {
         pollLogin: r.module.pollLogin?.() ?? false,
         modelCount: models.length,
         enabledModelCount: models.filter((m) => m.enabled).length,
+        models: models.filter((m) => m.enabled).map((m) => m.id),
         accounts: this.accountViews(id)
       };
     });

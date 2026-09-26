@@ -88,6 +88,18 @@ OpenChamber 自带 OpenCode，可把本端点注册成自定义 provider（`open
 
 （`requireApiKey` 打开后，在 provider 的 `options.apiKey` 填面板里创建的 Key。）
 
+## 常见问题
+
+- **新建的模型/组合在 OpenCode（或 Casleo）的模型选择里看不到**：OpenCode 只在启动 /
+  重新拉取 provider 模型时读 `/v1/models`。点面板「端点与密钥 → 复制 provider 配置」，
+  把生成的片段更新到 `opencode.json`（或在 Casleo 里更新 provider），再重启 OpenCode /
+  重新拉取模型即可。
+- **签到或跑了几次请求后积分数字没变**：积分在服务侧有 1 分钟缓存，且面板显示两位
+  小数；点一次「刷新」就会拿到最新值。
+- **刷新按钮转个不停**：旧版本会把加载状态画死，`0.1.1` 起已修复（加载中才转）。
+- **端点打不开**：先确认 OpenChamber 在运行、且本次启动后打开过一次面板（扩展的本地
+  服务由宿主在第一次面板请求时拉起）。
+
 ## 行为边界（先读这一段）
 
 - **服务随 OpenChamber 启停**，不是常驻守护进程：OpenChamber 退出后端点不可用；

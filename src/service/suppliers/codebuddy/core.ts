@@ -103,7 +103,7 @@ const POLL_INTERVAL_MS = 5000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000
 /** 今日已签到（幂等，视为成功）。 */
 const ALREADY_CHECKED_IN_CODE = 10001
-const CREDITS_TTL_MS = 10 * 60 * 1000 // 积分缓存 10 分钟
+const CREDITS_TTL_MS = 60 * 1000 // 积分缓存 1 分钟（面板要能较快看到签到后的变化）
 /**
  * 拿不到积分时报它（**不是 0**）：核心靠这个区分「没拿到」和「拿到了 0」，
  * 从而保留上次持久化的值。报 0 会把缓存冲成 0 —— 重启后面板永久显示 0

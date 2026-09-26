@@ -26,6 +26,8 @@ export interface SupplierView {
   /** 当前模型数（启用/总数）。 */
   modelCount: number
   enabledModelCount: number
+  /** 启用中的模型 id（面板用来生成 provider 配置片段）。 */
+  models: string[]
   accounts: AccountView[]
 }
 

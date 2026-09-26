@@ -26,7 +26,7 @@ import type {
   SupplierView,
 } from '../shared/types.ts'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 
 export interface SupplierRuntime {
   module: SupplierModule
@@ -185,6 +185,7 @@ export class App {
         pollLogin: r.module.pollLogin?.() ?? false,
         modelCount: models.length,
         enabledModelCount: models.filter((m) => m.enabled).length,
+        models: models.filter((m) => m.enabled).map((m) => m.id),
         accounts: this.accountViews(id),
       }
     })

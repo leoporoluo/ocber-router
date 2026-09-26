@@ -123,6 +123,8 @@ const COPY = {
     failed: '失败',
     requestWord: '请求',
     modelWord: '模型',
+    copyProvider: '复制 provider 配置',
+    providerHint: '粘贴到 opencode.json（或在 Casleo 里更新）。新建的模型/组合要等 OpenCode 重新拉取模型或重启后才会出现在模型选择里。',
   },
   en: {
     title: 'OCBer Router',
@@ -208,6 +210,8 @@ const COPY = {
     failed: 'failed',
     requestWord: 'requests',
     modelWord: 'models',
+    copyProvider: 'Copy provider config',
+    providerHint: 'Paste into opencode.json (or update it in Casleo). New models/combos appear in the picker only after OpenCode refetches models or restarts.',
   },
 } as const
 
@@ -239,6 +243,8 @@ let chart: ChartBucket[] = []
 let mounted = false
 let refreshing = false
 let stopped = false
+let jobActive = false
+let noticeTimer: number | null = null
 
 let noticeRoot: HTMLElement
 let headRoot: HTMLElement
@@ -273,6 +279,10 @@ function describeError(error: unknown): string {
 }
 
 function notify(message: string | null, tone: 'info' | 'success' | 'warning' | 'error' = 'info'): void {
+  if (noticeTimer !== null) {
+    window.clearTimeout(noticeTimer)
+    noticeTimer = null
+  }
   if (message === null || message === '') {
     banner?.dispose()
     banner = null
@@ -280,9 +290,16 @@ function notify(message: string | null, tone: 'info' | 'success' | 'warning' | '
   }
   if (banner !== null) {
     banner.update({ tone, title: message })
-    return
+  } else {
+    banner = mountBanner(noticeRoot, { tone, title: message })
   }
-  banner = mountBanner(noticeRoot, { tone, title: message })
+  // 提示自动消失：成功/进行中短一点，错误留久一点；有新的提示会重置计时。
+  const ttl = tone === 'error' ? 12_000 : tone === 'success' ? 5_000 : 6_000
+  noticeTimer = window.setTimeout(() => {
+    noticeTimer = null
+    banner?.dispose()
+    banner = null
+  }, ttl)
 }
 
 async function api<T = unknown>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
@@ -325,6 +342,13 @@ function fmtMs(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(2)}s` : `${Math.round(n)}ms`
 }
 
+/** 积分：小于 1000 保留两位小数（签到/消耗的细微变化要看得见）。 */
+function fmtCredits(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`
+  return Number.isInteger(n) ? String(n) : n.toFixed(2)
+}
+
 // ---------------------------------------------------------------------------
 // 数据加载
 // ---------------------------------------------------------------------------
@@ -349,16 +373,19 @@ async function loadDetail(id: string): Promise<void> {
 async function reload(): Promise<void> {
   if (refreshing) return
   refreshing = true
+  renderHead()
   try {
     await refreshState()
     if (tab === 'overview') await loadStats()
     if (detailId !== null) await loadDetail(detailId)
-    renderBody()
   } catch (error) {
     notify(describeError(error), 'error')
   } finally {
     refreshing = false
   }
+  renderHead()
+  renderTabs()
+  renderBody()
 }
 
 // ---------------------------------------------------------------------------
@@ -379,34 +406,42 @@ async function runJob(type: JobType, supplierId: string): Promise<void> {
     notify(describeError(error), 'error')
     return
   }
+  jobActive = true
   notify(`${jobLabel(type)}：${copy.jobRunning}`, 'info')
   let openedUrl = false
-  for (let i = 0; i < 220; i += 1) {
-    await sleep(1500)
-    let current: JobView
-    try {
-      current = await api<JobView>('GET', `/api/jobs/${job.id}`)
-    } catch (error) {
-      notify(describeError(error), 'error')
+  try {
+    for (let i = 0; i < 220; i += 1) {
+      await sleep(1500)
+      let current: JobView
+      try {
+        current = await api<JobView>('GET', `/api/jobs/${job.id}`)
+      } catch (error) {
+        notify(describeError(error), 'error')
+        return
+      }
+      if (!openedUrl && current.loginUrl !== undefined && current.loginUrl !== '') {
+        openedUrl = true
+        try {
+          await host.openUrl(current.loginUrl)
+        } catch {
+          notify(`请手动打开登录链接：${current.loginUrl}`, 'warning')
+        }
+      }
+      if (current.state === 'running') {
+        notify(`${jobLabel(type)}：${current.message}`, 'info')
+        continue
+      }
+      notify(`${jobLabel(type)}：${current.message}`, current.state === 'error' ? 'error' : 'success')
+      await reload()
+      // 签到/登录后积分是服务后台异步拉的，稍后再拉一次状态把新值带出来
+      await sleep(1500)
+      await reload()
       return
     }
-    if (!openedUrl && current.loginUrl !== undefined && current.loginUrl !== '') {
-      openedUrl = true
-      try {
-        await host.openUrl(current.loginUrl)
-      } catch {
-        notify(`请手动打开登录链接：${current.loginUrl}`, 'warning')
-      }
-    }
-    if (current.state === 'running') {
-      notify(`${jobLabel(type)}：${current.message}`, 'info')
-      continue
-    }
-    notify(`${jobLabel(type)}：${current.message}`, current.state === 'error' ? 'error' : 'success')
-    await reload()
-    return
+    notify(`${jobLabel(type)}：${copy.timeout}`, 'error')
+  } finally {
+    jobActive = false
   }
-  notify(`${jobLabel(type)}：${copy.timeout}`, 'error')
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +760,7 @@ function renderSupplierDetail(): HTMLElement {
     const main = el('div', 'oc-item-main')
     const info = el('div', 'oc-grow')
     info.append(el('div', 'oc-item-title', account.nickname))
-    const credits = account.credits < 0 ? copy.unknownCredits : fmtTokens(account.credits)
+    const credits = account.credits < 0 ? copy.unknownCredits : fmtCredits(account.credits)
     info.append(el('div', 'oc-item-sub', `${account.uid} · ${copy.credits} ${credits}`))
     const right = el('div', 'oc-actions')
     if (account.cooling) {
@@ -749,7 +784,7 @@ function renderSupplierDetail(): HTMLElement {
     item.append(main)
     accountNodes.push(item)
   }
-  wrap.append(cardWithTitle(copy.poolOrder, accountsActions, accountNodes))
+  wrap.append(cardWithTitle(copy.poolOrder, null, [accountsActions, ...accountNodes]))
 
   // 模型
   const modelActions = el('div', 'oc-actions')
@@ -790,7 +825,8 @@ function renderSupplierDetail(): HTMLElement {
   for (const model of supplier.models) modelList.append(renderModelRow(supplier.id, model))
   if (supplier.models.length > 0) modelNodes.push(modelList)
   modelNodes.push(renderCustomModelRow(supplier.id))
-  wrap.append(cardWithTitle(copy.models, modelActions, modelNodes))
+  modelNodes.unshift(modelActions)
+  wrap.append(cardWithTitle(copy.models, null, modelNodes))
 
   return wrap
 }
@@ -958,6 +994,44 @@ function renderComboItem(combo: ComboResolved): HTMLElement {
 // 端点与密钥
 // ---------------------------------------------------------------------------
 
+/** 当前对外暴露的模型 id（与服务端 /v1/models 同口径）。 */
+function modelIdsForProvider(): string[] {
+  const out = new Set<string>()
+  const bare = new Map<string, number>()
+  for (const supplier of state?.suppliers ?? []) {
+    if (!supplier.enabled) continue
+    for (const model of supplier.models) {
+      bare.set(model, (bare.get(model) ?? 0) + 1)
+      out.add(`${supplier.alias}/${model}`)
+    }
+  }
+  for (const [model, count] of bare) if (count === 1) out.add(model)
+  for (const combo of state?.combos ?? []) {
+    if (combo.targets.length > 0 && combo.targets.every((t) => t.ok)) out.add(combo.name)
+  }
+  return [...out]
+}
+
+/** 生成可直接粘贴到 opencode.json 的 provider 片段（含当前全部模型与组合）。 */
+function providerSnippet(): string {
+  const models: Record<string, { name: string }> = {}
+  for (const id of modelIdsForProvider()) models[id] = { name: id }
+  return JSON.stringify(
+    {
+      provider: {
+        ocber: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'OCBer Router',
+          options: { baseURL: state?.endpoint ?? 'http://127.0.0.1:3080/v1' },
+          models,
+        },
+      },
+    },
+    null,
+    2,
+  )
+}
+
 function renderEndpoint(): HTMLElement {
   const wrap = el('div')
   wrap.style.display = 'flex'
@@ -1019,6 +1093,24 @@ function renderEndpoint(): HTMLElement {
   })
 
   wrap.append(cardWithTitle(copy.endpoint, null, [endpointRow, portRow, requireRow]))
+
+  // provider 配置片段：把当前模型/组合给到 OpenCode（含新建组合，避免「组合不出现」）
+  const providerRow = el('div', 'oc-flex')
+  const providerHint = el('div', 'oc-muted oc-grow', copy.providerHint)
+  const providerCopy = el('span')
+  mountButton(providerCopy, {
+    label: copy.copyProvider,
+    variant: 'outline',
+    size: 'sm',
+    onClick: () => {
+      void host
+        .writeClipboard(providerSnippet())
+        .then(() => notify(copy.copied, 'success'))
+        .catch((error) => notify(describeError(error), 'error'))
+    },
+  })
+  providerRow.append(providerHint, providerCopy)
+  wrap.append(card([providerRow]))
 
   // API keys
   let keyNameDraft = ''
@@ -1137,7 +1229,6 @@ function renderHead(): void {
 
 function renderBody(): void {
   clear(viewRoot)
-  renderHead()
   if (state === null) {
     viewRoot.append(card([mountSpinnerInline(copy.loading)]))
     return
@@ -1166,9 +1257,24 @@ function mount(): void {
   const loop = (): void => {
     if (stopped) return
     window.setTimeout(() => {
-      if (!document.hidden) void reload()
-      loop()
-    }, 12_000)
+      void (async () => {
+        if (!document.hidden && !refreshing && !jobActive) {
+          try {
+            if (tab === 'overview' || (tab === 'suppliers' && detailId === null)) {
+              await reload()
+            } else {
+              // 详情页 / 表单页只静默刷新头部与页签计数，避免把正在输入的内容重画掉
+              await refreshState()
+              renderHead()
+              renderTabs()
+            }
+          } catch {
+            // 静默失败，等下一次
+          }
+        }
+        loop()
+      })()
+    }, 15_000)
   }
   loop()
 }
