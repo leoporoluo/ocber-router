@@ -1477,12 +1477,6 @@ function renderHead(): void {
   clear(headRoot)
   const left = el('div', 'oc-grow')
   left.append(el('h1', 'oc-title', copy.title))
-  const sub = el('p', 'oc-sub')
-  sub.textContent =
-    state === null
-      ? copy.loading
-      : `v${state.version} · ${state.suppliers.reduce((n, s) => n + s.accounts.length, 0)} ${copy.accountCount} · ${state.endpoint}`
-  left.append(sub)
   const right = el('div', 'oc-actions')
   const refreshWrap = el('span')
   mountButton(refreshWrap, { label: copy.refresh, variant: 'outline', size: 'sm', loading: refreshing, onClick: () => void reload() })

@@ -2767,7 +2767,7 @@ class TpsTracker {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.10";
+var VERSION = "0.1.11";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
