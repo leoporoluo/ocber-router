@@ -137,11 +137,14 @@ export interface SettingsView {
   port: number
   /** 自动把 provider 配置写进 ~/.config/opencode/opencode.json。 */
   opencodeSync: boolean
+  /** provider 里放什么：models = 启用模型 + 组合；combos = 只放组合。 */
+  opencodeSyncMode: 'models' | 'combos'
 }
 
 /** OpenCode provider 同步状态。 */
 export interface OpencodeSyncView {
   enabled: boolean
+  mode: 'models' | 'combos'
   path: string
   exists: boolean
   /** 上次成功写入时间（0 = 从未）。 */

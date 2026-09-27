@@ -1,5 +1,6 @@
 // src/service/server.ts
 import http from "node:http";
+import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 
 // src/service/chat.ts
 import { randomBytes } from "node:crypto";
@@ -801,6 +802,8 @@ async function handleAdmin(deps, req, res, url) {
       app.keys.requireApiKey = bool(body.requireApiKey);
     if (body.opencodeSync !== undefined)
       app.settings.setOpencodeSync(bool(body.opencodeSync));
+    if (body.opencodeSyncMode !== undefined)
+      app.settings.setOpencodeSyncMode(str(body.opencodeSyncMode));
     if (body.port !== undefined) {
       const port = Number(body.port);
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
@@ -908,7 +911,7 @@ async function handleAdmin(deps, req, res, url) {
 }
 
 // src/service/server.ts
-var MAX_BODY = 8 * 1024 * 1024;
+var MAX_BODY = 64 * 1024 * 1024;
 var PORT_FALLBACK_TRIES = 20;
 async function readJsonBody(req) {
   const chunks = [];
@@ -916,17 +919,42 @@ async function readJsonBody(req) {
   for await (const chunk of req) {
     const buf = chunk;
     size += buf.length;
-    if (size > MAX_BODY)
-      return;
+    if (size > MAX_BODY) {
+      return {
+        ok: false,
+        error: `请求体超过上限（${Math.round(MAX_BODY / 1024 / 1024)}MB）`,
+        detail: `content-length=${req.headers["content-length"] ?? "?"} read=${size}`
+      };
+    }
     chunks.push(buf);
   }
   if (chunks.length === 0)
-    return {};
+    return { ok: true, body: {} };
+  let raw = Buffer.concat(chunks);
+  const encoding = String(req.headers["content-encoding"] ?? "").trim().toLowerCase();
   try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    return parsed !== null && typeof parsed === "object" ? parsed : undefined;
-  } catch {
-    return;
+    if (encoding === "gzip")
+      raw = gunzipSync(raw);
+    else if (encoding === "deflate")
+      raw = inflateSync(raw);
+    else if (encoding === "br")
+      raw = brotliDecompressSync(raw);
+  } catch (err) {
+    return { ok: false, error: `请求体解压失败（${encoding}）`, detail: err.message };
+  }
+  const text = raw.toString("utf8").replace(/^\uFEFF/, "");
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object") {
+      return { ok: false, error: "请求体不是 JSON 对象", detail: `type=${typeof parsed}` };
+    }
+    return { ok: true, body: parsed };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "请求体不是合法 JSON",
+      detail: `${err.message} | content-type=${req.headers["content-type"] ?? "?"} encoding=${encoding || "identity"} length=${raw.length} head=${JSON.stringify(text.slice(0, 120))}`
+    };
   }
 }
 function listen(server, port) {
@@ -1007,12 +1035,15 @@ async function startServer(app, serviceToken, adminPort) {
         return;
       }
       if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-        const body = await readJsonBody(req);
-        if (body === undefined) {
-          writeJson(res, 400, { error: { message: "请求体不是合法 JSON", type: "invalid_request_error", param: null, code: null } });
+        const parsed = await readJsonBody(req);
+        if (!parsed.ok || parsed.body === undefined) {
+          console.error(`[ocber-router] /v1/chat/completions body rejected: ${parsed.error ?? "unknown"} | ${parsed.detail ?? ""}`);
+          writeJson(res, 400, {
+            error: { message: parsed.error ?? "请求体不合法", type: "invalid_request_error", param: null, code: null }
+          });
           return;
         }
-        await handleChat(app, res, body);
+        await handleChat(app, res, parsed.body);
         return;
       }
       writeJson(res, 404, { error: { message: `未知端点 ${req.method} ${url.pathname}`, type: "invalid_request_error", param: null, code: null } });
@@ -1042,17 +1073,11 @@ async function listenPublic(server, preferred) {
 }
 function modelList(app) {
   const out = new Map;
-  const bare = new Map;
-  const active = app.activeRuntimes();
-  for (const r of active) {
+  for (const r of app.activeRuntimes()) {
     for (const m of app.enabledModelIds(r.module.id)) {
-      bare.set(m, (bare.get(m) ?? 0) + 1);
-      out.set(`${app.aliasOf(r.module.id)}/${m}`, { id: `${app.aliasOf(r.module.id)}/${m}`, object: "model", created: 0, owned_by: r.module.id });
+      const id = `${app.aliasOf(r.module.id)}/${m}`;
+      out.set(id, { id, object: "model", created: 0, owned_by: r.module.id });
     }
-  }
-  for (const [m, count] of bare) {
-    if (count === 1)
-      out.set(m, { id: m, object: "model", created: 0, owned_by: "ocber-router" });
   }
   for (const combo of app.comboViews()) {
     if (combo.targets.some((t) => t.ok)) {
@@ -2205,6 +2230,7 @@ class SettingsStore {
   file;
   port;
   opencodeSync;
+  opencodeSyncMode;
   opencodeSignature;
   opencodeSyncedAt;
   constructor(dataDir) {
@@ -2213,6 +2239,7 @@ class SettingsStore {
     const p = Number(raw?.port);
     this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
     this.opencodeSync = typeof raw?.opencodeSync === "boolean" ? raw.opencodeSync : true;
+    this.opencodeSyncMode = raw?.opencodeSyncMode === "combos" ? "combos" : "models";
     this.opencodeSignature = typeof raw?.opencodeSignature === "string" ? raw.opencodeSignature : "";
     this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === "number" ? raw.opencodeSyncedAt : 0;
   }
@@ -2220,6 +2247,7 @@ class SettingsStore {
     return {
       port: this.port,
       opencodeSync: this.opencodeSync,
+      opencodeSyncMode: this.opencodeSyncMode,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt
     };
@@ -2234,6 +2262,10 @@ class SettingsStore {
     this.opencodeSync = enabled;
     this.save();
   }
+  setOpencodeSyncMode(mode) {
+    this.opencodeSyncMode = mode === "combos" ? "combos" : "models";
+    this.save();
+  }
   setOpencodeSyncState(signature, syncedAt) {
     this.opencodeSignature = signature;
     this.opencodeSyncedAt = syncedAt;
@@ -2243,6 +2275,7 @@ class SettingsStore {
     writeJson2(this.file, {
       port: this.port,
       opencodeSync: this.opencodeSync,
+      opencodeSyncMode: this.opencodeSyncMode,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt
     });
@@ -2263,10 +2296,12 @@ function normalizeContext(value) {
     return;
   return value < 1e4 ? value * 1000 : value;
 }
+var HIDDEN_MODEL_IDS = new Set(["default"]);
 function buildModels(app) {
   const out = {};
-  const bare = new Map;
   const add = (id, context) => {
+    if (HIDDEN_MODEL_IDS.has(id))
+      return;
     const limit = normalizeContext(context);
     out[id] = {
       modelID: id,
@@ -2275,18 +2310,15 @@ function buildModels(app) {
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] }
     };
   };
-  for (const supplier of app.activeRuntimes()) {
-    const alias = app.aliasOf(supplier.module.id);
-    for (const model of app.modelViews(supplier.module.id)) {
-      if (!model.enabled)
-        continue;
-      bare.set(model.id, (bare.get(model.id) ?? 0) + 1);
-      add(`${alias}/${model.id}`, model.context_length);
+  if (app.settings.get().opencodeSyncMode !== "combos") {
+    for (const supplier of app.activeRuntimes()) {
+      const alias = app.aliasOf(supplier.module.id);
+      for (const model of app.modelViews(supplier.module.id)) {
+        if (!model.enabled)
+          continue;
+        add(`${alias}/${model.id}`, model.context_length);
+      }
     }
-  }
-  for (const [model, count] of bare) {
-    if (count === 1)
-      add(model);
   }
   for (const combo of app.comboViews()) {
     if (combo.targets.some((t) => t.ok))
@@ -2299,6 +2331,7 @@ function syncOpencode(app, force = false) {
   const path = opencodeConfigPath();
   const view = (extra) => ({
     enabled: settings.opencodeSync,
+    mode: settings.opencodeSyncMode,
     path,
     exists: existsSync(path),
     syncedAt: settings.opencodeSyncedAt,
@@ -2309,7 +2342,7 @@ function syncOpencode(app, force = false) {
     return view();
   const models = buildModels(app);
   const modelCount = Object.keys(models).length;
-  const signature = createHash2("sha1").update(JSON.stringify({ endpoint: app.endpoint(), models: Object.keys(models).sort() })).digest("hex");
+  const signature = createHash2("sha1").update(JSON.stringify({ endpoint: app.endpoint(), mode: settings.opencodeSyncMode, models: Object.keys(models).sort() })).digest("hex");
   if (!force && signature === settings.opencodeSignature) {
     return view({ modelCount, syncedAt: settings.opencodeSyncedAt });
   }
@@ -2354,7 +2387,7 @@ function syncOpencode(app, force = false) {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.3";
+var VERSION = "0.1.4";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
@@ -2438,7 +2471,13 @@ class App {
   catalogEntry(id) {
     return this.catalog.get(id);
   }
+  supplierHasAccounts(id) {
+    const runtime = this.runtimeById(id);
+    return runtime !== undefined && runtime.module.status().accounts.length > 0;
+  }
   enabledModelIds(id) {
+    if (!this.supplierHasAccounts(id))
+      return [];
     const cfg = this.config.get(id);
     const all = new Set(this.catalog.get(id)?.ids ?? []);
     for (const m of cfg.custom)
@@ -2447,10 +2486,11 @@ class App {
   }
   modelViews(id) {
     const cfg = this.config.get(id);
+    const hasAccounts = this.supplierHasAccounts(id);
     const all = new Set(this.catalog.get(id)?.ids ?? []);
     for (const m of cfg.custom)
       all.add(m);
-    return [...all].map((m) => ({ id: m, enabled: !cfg.disabled.includes(m), custom: cfg.custom.includes(m) }));
+    return [...all].map((m) => ({ id: m, enabled: hasAccounts && !cfg.disabled.includes(m), custom: cfg.custom.includes(m) }));
   }
   accountViews(id) {
     const runtime = this.runtimeById(id);
@@ -2671,7 +2711,8 @@ class App {
     return {
       requireApiKey: this.keys.requireApiKey,
       port: this.settings.get().port || this.endpointPort || DEFAULT_PORT,
-      opencodeSync: this.settings.get().opencodeSync
+      opencodeSync: this.settings.get().opencodeSync,
+      opencodeSyncMode: this.settings.get().opencodeSyncMode
     };
   }
   state() {

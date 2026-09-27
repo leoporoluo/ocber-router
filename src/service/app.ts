@@ -28,7 +28,7 @@ import type {
   SupplierView,
 } from '../shared/types.ts'
 
-export const VERSION = '0.1.3'
+export const VERSION = '0.1.4'
 
 export interface SupplierRuntime {
   module: SupplierModule
@@ -142,20 +142,28 @@ export class App {
     return this.catalog.get(id)
   }
 
-  /** 某供应商启用的模型 id（目录 ∪ 自定义 − 停用）。 */
+  /** 某供应商是否有账号（没账号的供应商不参与路由 / 模型列表 / provider 同步）。 */
+  supplierHasAccounts(id: string): boolean {
+    const runtime = this.runtimeById(id)
+    return runtime !== undefined && runtime.module.status().accounts.length > 0
+  }
+
+  /** 某供应商启用的模型 id（目录 ∪ 自定义 − 停用）；无账号的供应商一律为空。 */
   enabledModelIds(id: string): string[] {
+    if (!this.supplierHasAccounts(id)) return []
     const cfg = this.config.get(id)
     const all = new Set<string>(this.catalog.get(id)?.ids ?? [])
     for (const m of cfg.custom) all.add(m)
     return [...all].filter((m) => !cfg.disabled.includes(m))
   }
 
-  /** 面板用：带启用/自定义标记的完整模型表。 */
+  /** 面板用：带启用/自定义标记的完整模型表（没账号时一律显示为停用）。 */
   modelViews(id: string): ModelView[] {
     const cfg = this.config.get(id)
+    const hasAccounts = this.supplierHasAccounts(id)
     const all = new Set<string>(this.catalog.get(id)?.ids ?? [])
     for (const m of cfg.custom) all.add(m)
-    return [...all].map((m) => ({ id: m, enabled: !cfg.disabled.includes(m), custom: cfg.custom.includes(m) }))
+    return [...all].map((m) => ({ id: m, enabled: hasAccounts && !cfg.disabled.includes(m), custom: cfg.custom.includes(m) }))
   }
 
   // -------------------------------------------------------------------------
@@ -418,6 +426,7 @@ export class App {
       requireApiKey: this.keys.requireApiKey,
       port: this.settings.get().port || this.endpointPort || DEFAULT_PORT,
       opencodeSync: this.settings.get().opencodeSync,
+      opencodeSyncMode: this.settings.get().opencodeSyncMode,
     }
   }
 

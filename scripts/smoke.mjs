@@ -1,12 +1,15 @@
 /**
  * 本地冒烟测试：用宿主约定的环境变量把 service/main.js 拉起来，验证
  *   - 管理端口鉴权、/api/state、/v1/models、未知模型 404、对外端口绑定
+ *   - 没账号的供应商：模型不列出、不进 provider
  *   - opencode.json provider 同步：新增 providers.ocber、保留其它 provider、
- *     组合进入 /v1/models 与 provider 模型表
+ *     只写 `别名/模型` + 组合（不写裸名，避免重复）、组合进入两张表
+ *   - 大请求体（>8MB）与 gzip 请求体都能正常解析（不再误报「不是合法 JSON」）
  *
  *   node scripts/smoke.mjs
  */
 import { spawn } from 'node:child_process'
+import { gzipSync } from 'node:zlib'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -93,16 +96,11 @@ try {
   check('endpoint port bound', Number.isInteger(state.endpointPort) && state.endpointPort > 0, JSON.stringify(state.endpointPort))
 
   const base = `http://127.0.0.1:${state.endpointPort}`
-  await sleep(1200) // 等后台目录预热落定（无账号时用内置兜底表，很快）
+  await sleep(1200) // 等后台目录预热落定
 
-  const modelsRes = await fetch(`${base}/v1/models`)
-  const models = await modelsRes.json()
-  check('GET /v1/models', modelsRes.status === 200 && models.object === 'list', `status=${modelsRes.status}`)
-  check(
-    'alias-prefixed models present',
-    Array.isArray(models.data) && models.data.some((m) => m.id.startsWith('codebuddy/')),
-    JSON.stringify(models.data?.slice(0, 3)),
-  )
+  // 两个供应商都没有账号 → 没有可列出的模型
+  const models = await (await fetch(`${base}/v1/models`)).json()
+  check('no-account suppliers expose no models', models.data.length === 0, JSON.stringify(models.data.slice(0, 4)))
 
   const unknown = await fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
@@ -113,27 +111,47 @@ try {
 
   // ---- opencode provider 同步 ----
   const state2 = await (await admin('/api/state')).json()
-  check('opencode sync wrote provider', state2.opencode?.exists === true && state2.opencode?.modelCount > 0, JSON.stringify(state2.opencode))
   check('opencode sync reported no error', state2.opencode?.error === undefined, String(state2.opencode?.error))
+  check('opencode sync mode default = models', state2.opencode?.mode === 'models', String(state2.opencode?.mode))
 
   const cfg = readConfig()
   check('existing provider keepme preserved', JSON.stringify(cfg.providers?.keepme) === JSON.stringify(originalProviders.keepme))
   check('existing provider other preserved', JSON.stringify(cfg.providers?.other) === JSON.stringify(originalProviders.other))
   check('native provider key untouched', JSON.stringify(cfg.provider) === '{}')
   check('providers.ocber written', typeof cfg.providers?.ocber?.settings?.baseURL === 'string' && cfg.providers.ocber.settings.baseURL.endsWith('/v1'), JSON.stringify(cfg.providers?.ocber?.settings))
-  check('ocber models non-empty', Object.keys(cfg.providers?.ocber?.models ?? {}).length > 0)
+  check('no-account supplier models stay out of provider', Object.keys(cfg.providers?.ocber?.models ?? {}).length === 0, JSON.stringify(Object.keys(cfg.providers?.ocber?.models ?? {})))
 
-  const comboRes = await admin('/api/combos/set', { method: 'POST', body: JSON.stringify({ name: 'smoke-combo', targets: ['glm-5.3'] }) })
+  // 组合：别名形式在任何账号状态下都可解析
+  const comboRes = await admin('/api/combos/set', { method: 'POST', body: JSON.stringify({ name: 'smoke-combo', targets: ['codebuddy/glm-5.3', 'codebuddy-en/glm-5.3'] }) })
   const combo = await comboRes.json()
-  check('combo target resolves (bare model name)', combo.combo?.targets?.[0]?.ok === true, JSON.stringify(combo.combo))
+  check('combo targets resolve', (combo.combo?.targets ?? []).every((t) => t.ok), JSON.stringify(combo.combo))
 
   await admin('/api/opencode/sync', { method: 'POST' })
   const cfg2 = readConfig()
-  check('combo synced into provider models', Object.keys(cfg2.providers?.ocber?.models ?? {}).includes('smoke-combo'))
-  check('keepme still preserved after second sync', JSON.stringify(cfg2.providers?.keepme) === JSON.stringify(originalProviders.keepme))
+  const ids = Object.keys(cfg2.providers?.ocber?.models ?? {})
+  check('combo synced into provider models', ids.includes('smoke-combo'), JSON.stringify(ids))
+  check('no bare duplicate of a model id', !ids.includes('glm-5.3'), JSON.stringify(ids))
+  check('placeholder "default" filtered out', !ids.includes('codebuddy/default'))
+  check('keepme preserved after second sync', JSON.stringify(cfg2.providers?.keepme) === JSON.stringify(originalProviders.keepme))
 
   const models2 = await (await fetch(`${base}/v1/models`)).json()
   check('combo listed in /v1/models', models2.data.some((m) => m.id === 'smoke-combo'))
+  check('no alias models listed without accounts', !models2.data.some((m) => m.id.startsWith('codebuddy/')), JSON.stringify(models2.data.map((m) => m.id)))
+
+  // ---- 请求体：大 body 与 gzip 都要能解析 ----
+  const bigText = 'x'.repeat(9 * 1024 * 1024)
+  const bigBody = JSON.stringify({ model: 'codebuddy/glm-5.3', stream: false, messages: [{ role: 'user', content: bigText }] })
+  const bigRes = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bigBody })
+  const bigJson = await bigRes.json().catch(() => ({}))
+  check('9MB body parsed (not "invalid JSON")', bigRes.status !== 400 || !String(bigJson?.error?.message ?? '').includes('不是合法 JSON'), `status=${bigRes.status} msg=${bigJson?.error?.message}`)
+  check('9MB body routed to 503 (no accounts)', bigRes.status === 503, `status=${bigRes.status}`)
+
+  const gzRes = await fetch(`${base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
+    body: gzipSync(Buffer.from(JSON.stringify({ model: 'codebuddy/glm-5.3', stream: false, messages: [{ role: 'user', content: 'hi' }] }))),
+  })
+  check('gzip body accepted (503, not 400)', gzRes.status === 503, `status=${gzRes.status}`)
 
   const health = await fetch(`${base}/health`)
   check('public /health', health.status === 200, `status=${health.status}`)

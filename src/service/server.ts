@@ -14,29 +14,72 @@
  */
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib'
 
 import { App } from './app.ts'
 import { handleAdmin } from './admin.ts'
 import { handleChat, writeJson } from './chat.ts'
 
-const MAX_BODY = 8 * 1024 * 1024
+const MAX_BODY = 64 * 1024 * 1024
 const PORT_FALLBACK_TRIES = 20
 
-async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown> | undefined> {
+interface BodyResult {
+  ok: boolean
+  body?: Record<string, unknown>
+  /** 给客户端看的原因（失败时）。 */
+  error?: string
+  /** 给服务日志看的技术细节。 */
+  detail?: string
+}
+
+/**
+ * 读请求体。
+ *
+ * 上限放宽到 64MB 并支持 `content-encoding: gzip/deflate/br`：OpenCode 发来的
+ * 会话上下文里可能带多张图片（base64），旧的 8MB 上限会把请求误判成
+ * 「请求体不是合法 JSON」。
+ * 失败原因要能分辨：太大 / 解压失败 / JSON 坏了 / 不是对象。
+ */
+async function readJsonBody(req: http.IncomingMessage): Promise<BodyResult> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     const buf = chunk as Buffer
     size += buf.length
-    if (size > MAX_BODY) return undefined
+    if (size > MAX_BODY) {
+      return {
+        ok: false,
+        error: `请求体超过上限（${Math.round(MAX_BODY / 1024 / 1024)}MB）`,
+        detail: `content-length=${req.headers['content-length'] ?? '?'} read=${size}`,
+      }
+    }
     chunks.push(buf)
   }
-  if (chunks.length === 0) return {}
+  if (chunks.length === 0) return { ok: true, body: {} }
+
+  let raw = Buffer.concat(chunks)
+  const encoding = String(req.headers['content-encoding'] ?? '').trim().toLowerCase()
   try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-    return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : undefined
-  } catch {
-    return undefined
+    if (encoding === 'gzip') raw = gunzipSync(raw)
+    else if (encoding === 'deflate') raw = inflateSync(raw)
+    else if (encoding === 'br') raw = brotliDecompressSync(raw)
+  } catch (err) {
+    return { ok: false, error: `请求体解压失败（${encoding}）`, detail: (err as Error).message }
+  }
+
+  const text = raw.toString('utf8').replace(/^\uFEFF/, '')
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (parsed === null || typeof parsed !== 'object') {
+      return { ok: false, error: '请求体不是 JSON 对象', detail: `type=${typeof parsed}` }
+    }
+    return { ok: true, body: parsed as Record<string, unknown> }
+  } catch (err) {
+    return {
+      ok: false,
+      error: '请求体不是合法 JSON',
+      detail: `${(err as Error).message} | content-type=${req.headers['content-type'] ?? '?'} encoding=${encoding || 'identity'} length=${raw.length} head=${JSON.stringify(text.slice(0, 120))}`,
+    }
   }
 }
 
@@ -133,12 +176,15 @@ export async function startServer(app: App, serviceToken: string, adminPort: num
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: { message: '请求体不是合法 JSON', type: 'invalid_request_error', param: null, code: null } })
+        const parsed = await readJsonBody(req)
+        if (!parsed.ok || parsed.body === undefined) {
+          console.error(`[ocber-router] /v1/chat/completions body rejected: ${parsed.error ?? 'unknown'} | ${parsed.detail ?? ''}`)
+          writeJson(res, 400, {
+            error: { message: parsed.error ?? '请求体不合法', type: 'invalid_request_error', param: null, code: null },
+          })
           return
         }
-        await handleChat(app, res, body)
+        await handleChat(app, res, parsed.body)
         return
       }
       writeJson(res, 404, { error: { message: `未知端点 ${req.method} ${url.pathname}`, type: 'invalid_request_error', param: null, code: null } })
@@ -168,19 +214,20 @@ async function listenPublic(server: http.Server, preferred: number): Promise<num
   return listen(server, 0)
 }
 
-/** /v1/models：别名全名 + 无歧义的裸名 + 组合名。 */
+/**
+ * /v1/models：只暴露 `别名/模型` 全名 + 组合名。
+ *
+ * 不再输出「裸模型名」：同一份列表同时喂给 OpenCode 的 provider 配置，
+ * 裸名与全名并存会让模型选择里每个模型出现两次（2026-09-27 反馈）。
+ * 需要裸名调用的客户端仍可直接请求（路由层兼容），只是不列出。
+ */
 function modelList(app: App): Array<{ id: string; object: string; created: number; owned_by: string }> {
   const out = new Map<string, { id: string; object: string; created: number; owned_by: string }>()
-  const bare = new Map<string, number>()
-  const active = app.activeRuntimes()
-  for (const r of active) {
+  for (const r of app.activeRuntimes()) {
     for (const m of app.enabledModelIds(r.module.id)) {
-      bare.set(m, (bare.get(m) ?? 0) + 1)
-      out.set(`${app.aliasOf(r.module.id)}/${m}`, { id: `${app.aliasOf(r.module.id)}/${m}`, object: 'model', created: 0, owned_by: r.module.id })
+      const id = `${app.aliasOf(r.module.id)}/${m}`
+      out.set(id, { id, object: 'model', created: 0, owned_by: r.module.id })
     }
-  }
-  for (const [m, count] of bare) {
-    if (count === 1) out.set(m, { id: m, object: 'model', created: 0, owned_by: 'ocber-router' })
   }
   for (const combo of app.comboViews()) {
     if (combo.targets.some((t) => t.ok)) {

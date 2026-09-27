@@ -31,6 +31,9 @@ function normalizeContext(value: number | undefined): number | undefined {
   return value < 10_000 ? value * 1000 : value
 }
 
+/** 上游配置里的占位项，不是可直选的模型。 */
+const HIDDEN_MODEL_IDS = new Set(['default'])
+
 interface ProviderModel {
   modelID: string
   name: string
@@ -38,11 +41,16 @@ interface ProviderModel {
   capabilities: { tools: boolean; input: string[]; output: string[] }
 }
 
-/** 本机对外暴露的模型（与服务端 /v1/models 同口径）+ 组合。 */
+/**
+ * provider 里要暴露的模型：
+ *   - 只写 `别名/模型`（不写裸名，否则 OpenCode 的模型选择里每个模型出现两次）
+ *   - 没账号的供应商整个跳过（模型当前不可用，见 app.supplierHasAccounts）
+ *   - 组合永远带上（前提：至少一个目标可解析）
+ */
 function buildModels(app: App): Record<string, ProviderModel> {
   const out: Record<string, ProviderModel> = {}
-  const bare = new Map<string, number>()
   const add = (id: string, context?: number): void => {
+    if (HIDDEN_MODEL_IDS.has(id)) return
     const limit = normalizeContext(context)
     out[id] = {
       modelID: id,
@@ -52,16 +60,14 @@ function buildModels(app: App): Record<string, ProviderModel> {
     }
   }
 
-  for (const supplier of app.activeRuntimes()) {
-    const alias = app.aliasOf(supplier.module.id)
-    for (const model of app.modelViews(supplier.module.id)) {
-      if (!model.enabled) continue
-      bare.set(model.id, (bare.get(model.id) ?? 0) + 1)
-      add(`${alias}/${model.id}`, model.context_length)
+  if (app.settings.get().opencodeSyncMode !== 'combos') {
+    for (const supplier of app.activeRuntimes()) {
+      const alias = app.aliasOf(supplier.module.id)
+      for (const model of app.modelViews(supplier.module.id)) {
+        if (!model.enabled) continue
+        add(`${alias}/${model.id}`, model.context_length)
+      }
     }
-  }
-  for (const [model, count] of bare) {
-    if (count === 1) add(model)
   }
   for (const combo of app.comboViews()) {
     // 至少一个目标可解析就收录：请求时会自动跳过无效目标
@@ -77,6 +83,7 @@ export function syncOpencode(app: App, force = false): OpencodeSyncView {
 
   const view = (extra?: Partial<OpencodeSyncView>): OpencodeSyncView => ({
     enabled: settings.opencodeSync,
+    mode: settings.opencodeSyncMode,
     path,
     exists: existsSync(path),
     syncedAt: settings.opencodeSyncedAt,
@@ -89,7 +96,7 @@ export function syncOpencode(app: App, force = false): OpencodeSyncView {
   const models = buildModels(app)
   const modelCount = Object.keys(models).length
   const signature = createHash('sha1')
-    .update(JSON.stringify({ endpoint: app.endpoint(), models: Object.keys(models).sort() }))
+    .update(JSON.stringify({ endpoint: app.endpoint(), mode: settings.opencodeSyncMode, models: Object.keys(models).sort() }))
     .digest('hex')
   if (!force && signature === settings.opencodeSignature) {
     return view({ modelCount, syncedAt: settings.opencodeSyncedAt })

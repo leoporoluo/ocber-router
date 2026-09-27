@@ -150,6 +150,7 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
     const body = await readBody(req)
     if (body.requireApiKey !== undefined) app.keys.requireApiKey = bool(body.requireApiKey)
     if (body.opencodeSync !== undefined) app.settings.setOpencodeSync(bool(body.opencodeSync))
+    if (body.opencodeSyncMode !== undefined) app.settings.setOpencodeSyncMode(str(body.opencodeSyncMode))
     if (body.port !== undefined) {
       const port = Number(body.port)
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {

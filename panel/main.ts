@@ -14,6 +14,7 @@ import {
   mountBanner,
   mountBadge,
   mountButton,
+  mountSelect,
   mountSpinner,
   mountSwitch,
   mountTabs,
@@ -131,6 +132,11 @@ const COPY = {
     syncNever: '从未',
     syncModels: '模型数',
     syncFailed: '同步失败',
+    syncMode: '同步内容',
+    syncModeAll: '启用模型 + 组合',
+    syncModeCombos: '仅组合',
+    syncModeHint: '同一个模型不再同时以「别名/模型」和裸名出现（避免模型选择里重复）。',
+    noAccountsModels: '未添加账号：模型暂不参与路由与同步，添加链接后自动恢复。',
     edit: '编辑',
     editCancel: '取消编辑',
     editingCombo: '正在编辑',
@@ -227,6 +233,11 @@ const COPY = {
     syncNever: 'never',
     syncModels: 'Models',
     syncFailed: 'Sync failed',
+    syncMode: 'Contents',
+    syncModeAll: 'Enabled models + combos',
+    syncModeCombos: 'Combos only',
+    syncModeHint: 'Each model appears once (as alias/model); bare duplicates are gone.',
+    noAccountsModels: 'No account yet: these models stay out of routing and sync until a link is added.',
     edit: 'Edit',
     editCancel: 'Cancel edit',
     editingCombo: 'Editing',
@@ -633,7 +644,13 @@ function renderSupplierList(): HTMLElement {
     }
     const nameWrap = el('div', 'oc-grow')
     nameWrap.append(el('div', 'oc-item-title', supplier.name))
-    nameWrap.append(el('div', 'oc-item-sub', `${supplier.alias} · ${supplier.accounts.length} ${copy.accountCount} · ${supplier.enabledModelCount}/${supplier.modelCount} ${copy.modelWord}`))
+    nameWrap.append(
+      el(
+        'div',
+        'oc-item-sub',
+        `${supplier.alias} · ${supplier.accounts.length} ${copy.accountCount} · ${supplier.enabledModelCount}/${supplier.modelCount} ${copy.modelWord}${supplier.accounts.length === 0 ? ` · ${copy.noAccountsModels}` : ''}`,
+      ),
+    )
     left.append(nameWrap)
     const right = el('div', 'oc-actions')
     right.append(mountToggleMini(supplier))
@@ -696,6 +713,7 @@ function renderSupplierDetail(): HTMLElement {
     return wrap
   }
   const supplier = detail
+  const locked = supplier.accounts.length === 0
 
   // 头部：图标 + 名称 + 开关
   const head = el('div', 'oc-card')
@@ -818,6 +836,7 @@ function renderSupplierDetail(): HTMLElement {
     label: copy.enableAll,
     variant: 'outline',
     size: 'sm',
+    disabled: locked,
     onClick: () => {
       void api('POST', `/api/suppliers/${encodeURIComponent(supplier.id)}/models/all`, { enabled: true })
         .then(reload)
@@ -829,6 +848,7 @@ function renderSupplierDetail(): HTMLElement {
     label: copy.disableAll,
     variant: 'outline',
     size: 'sm',
+    disabled: locked,
     onClick: () => {
       void api('POST', `/api/suppliers/${encodeURIComponent(supplier.id)}/models/all`, { enabled: false })
         .then(reload)
@@ -838,9 +858,10 @@ function renderSupplierDetail(): HTMLElement {
   modelActions.append(fetchModels, enableAll, disableAll)
 
   const modelNodes: HTMLElement[] = []
+  if (locked) modelNodes.push(el('div', 'oc-item-sub', copy.noAccountsModels))
   if (supplier.models.length === 0) modelNodes.push(empty(copy.noModels))
   const modelList = el('div', 'oc-scroll')
-  for (const model of supplier.models) modelList.append(renderModelRow(supplier.id, model))
+  for (const model of supplier.models) modelList.append(renderModelRow(supplier.id, model, locked))
   if (supplier.models.length > 0) modelNodes.push(modelList)
   modelNodes.push(renderCustomModelRow(supplier.id))
   modelNodes.unshift(modelActions)
@@ -849,7 +870,7 @@ function renderSupplierDetail(): HTMLElement {
   return wrap
 }
 
-function renderModelRow(supplierId: string, model: ModelView): HTMLElement {
+function renderModelRow(supplierId: string, model: ModelView, locked: boolean): HTMLElement {
   const item = el('div', 'oc-item-main')
   const info = el('div', 'oc-grow')
   info.append(el('div', 'oc-item-title', model.id))
@@ -880,6 +901,7 @@ function renderModelRow(supplierId: string, model: ModelView): HTMLElement {
   mountSwitch(toggle, {
     label: '',
     checked: model.enabled,
+    disabled: locked,
     onChange: (value) => {
       void api('POST', `/api/suppliers/${encodeURIComponent(supplierId)}/models/toggle`, { id: model.id, enabled: value })
         .then(reload)
@@ -1130,6 +1152,20 @@ function renderEndpoint(): HTMLElement {
       .then(() => reload())
       .catch((error) => notify(describeError(error), 'error'))
   })
+  const syncModeWrap = el('div')
+  mountSelect(syncModeWrap, {
+    label: copy.syncMode,
+    value: sync?.mode ?? 'models',
+    options: [
+      { id: 'models', label: copy.syncModeAll, hint: copy.syncModeHint },
+      { id: 'combos', label: copy.syncModeCombos },
+    ],
+    onChange: (id) => {
+      void api('POST', '/api/settings', { opencodeSyncMode: id })
+        .then(() => reload())
+        .catch((error) => notify(describeError(error), 'error'))
+    },
+  })
   const syncStatusRow = el('div', 'oc-row')
   const syncInfo = el('div', 'oc-grow')
   const syncState =
@@ -1154,7 +1190,7 @@ function renderEndpoint(): HTMLElement {
     },
   })
   syncStatusRow.append(syncInfo, syncNowWrap)
-  wrap.append(cardWithTitle(copy.opencodeTitle, null, [syncRow, syncStatusRow]))
+  wrap.append(cardWithTitle(copy.opencodeTitle, null, [syncRow, syncModeWrap, syncStatusRow]))
 
   // API keys
   let keyNameDraft = ''
