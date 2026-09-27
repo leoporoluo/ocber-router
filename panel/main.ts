@@ -156,14 +156,6 @@ const COPY = {
     tpsEstimated: '估算',
     tpsActive: '生成',
     tpsPaused: '暂停',
-    tpsCharsPerSecond: '字符/秒',
-    tpsCharsPerToken: '每 token 字符数',
-    tpsSessionTokens: '会话 token 数',
-    tpsStatus: '状态',
-    tpsLastEvent: '最近事件',
-    tpsEvents: '事件数',
-    tpsNoOrigin: '当前界面拿不到 OpenChamber 地址（中继或内嵌视图），TPS 仪表盘不可用。',
-    tpsNote: 'token 数由流式输出的字符推算，并以已完成的轮次校准。',
   },
   en: {
     title: 'OCBer Router',
@@ -280,14 +272,6 @@ const COPY = {
     tpsEstimated: 'estimated',
     tpsActive: 'generating',
     tpsPaused: 'paused',
-    tpsCharsPerSecond: 'Characters/s',
-    tpsCharsPerToken: 'Chars per token',
-    tpsSessionTokens: 'Session tokens',
-    tpsStatus: 'Status',
-    tpsLastEvent: 'Last event',
-    tpsEvents: 'Events seen',
-    tpsNoOrigin: 'This surface cannot reach the OpenChamber server (relay or embedded view).',
-    tpsNote: 'Tokens are estimated from streamed characters, calibrated with completed turns.',
   },
 } as const
 
@@ -331,15 +315,8 @@ let tpsRefs: {
   value: HTMLElement
   badge: ReturnType<typeof mountBadge>
   fill: HTMLElement
-  session: HTMLElement
   lastTurnValue: HTMLElement
   lastTurnMeta: HTMLElement
-  charsPerSecond: HTMLElement
-  charsPerToken: HTMLElement
-  sessionTokens: HTMLElement
-  connection: HTMLElement
-  lastEvent: HTMLElement
-  events: HTMLElement
 } | null = null
 
 let noticeRoot: HTMLElement
@@ -568,13 +545,6 @@ function empty(text: string): HTMLElement {
   return el('div', 'oc-empty', text)
 }
 
-/** 距最近事件的秒数。 */
-function fmtAge(lastEventAt: number | null): string {
-  if (lastEventAt === null || lastEventAt === 0) return '—'
-  const seconds = Math.max(0, (Date.now() - lastEventAt) / 1000)
-  return seconds < 1 ? '<1 s' : `${seconds.toFixed(0)} s`
-}
-
 /** 面板自己的 origin（沙箱 iframe 里可能是 about:srcdoc，取不到就返回 null）。 */
 function panelOrigin(): string | null {
   try {
@@ -622,7 +592,6 @@ function buildTpsCard(): HTMLElement {
   const bar = el('div', 'oc-tps-bar')
   const fill = el('div', 'oc-tps-bar-fill')
   bar.append(fill)
-  const session = el('div', 'oc-item-sub', copy.noData)
 
   const lastTurnWrap = el('div', 'oc-item')
   lastTurnWrap.append(el('div', 'oc-item-sub', copy.tpsLastTurn))
@@ -630,33 +599,13 @@ function buildTpsCard(): HTMLElement {
   const lastTurnMeta = el('div', 'oc-item-sub', '')
   lastTurnWrap.append(lastTurnValue, lastTurnMeta)
 
-  const details = el('dl', 'oc-details')
-  const detailRow = (label: string): HTMLElement => {
-    const valueNode = el('dd', 'oc-detail-value', '—')
-    details.append(el('dt', 'oc-detail-label', label), valueNode)
-    return valueNode
-  }
-  const charsPerSecond = detailRow(copy.tpsCharsPerSecond)
-  const charsPerToken = detailRow(copy.tpsCharsPerToken)
-  const sessionTokens = detailRow(copy.tpsSessionTokens)
-  const connection = detailRow(copy.tpsStatus)
-  const lastEvent = detailRow(copy.tpsLastEvent)
-  const events = detailRow(copy.tpsEvents)
-
-  card.append(head, valueRow, windowLine, bar, session, lastTurnWrap, details)
+  card.append(head, valueRow, windowLine, bar, lastTurnWrap)
   tpsRefs = {
     value,
     badge: mountBadge(badgeSlot, { label: copy.tpsConnecting, tone: 'neutral' }),
     fill,
-    session,
     lastTurnValue,
     lastTurnMeta,
-    charsPerSecond,
-    charsPerToken,
-    sessionTokens,
-    connection,
-    lastEvent,
-    events,
   }
   return card
 }
@@ -669,7 +618,6 @@ function renderTps(): void {
   const origin = panelOrigin()
 
   if (origin === null) {
-    refs.session.textContent = copy.tpsNoOrigin
     refs.badge.update({ label: copy.tpsAsleep, tone: 'neutral' })
     return
   }
@@ -692,8 +640,6 @@ function renderTps(): void {
   })()
   refs.badge.update(status)
 
-  refs.session.textContent = snap?.sessionTitle ?? currentSession?.title ?? copy.noData
-
   const turn = snap?.lastTurn ?? null
   if (turn !== null) {
     refs.lastTurnValue.textContent = `${turn.tokensPerSecond.toFixed(1)} ${copy.tpsUnit}`
@@ -706,13 +652,6 @@ function renderTps(): void {
     refs.lastTurnValue.textContent = measuring ? copy.tpsLastTurnPending : '—'
     refs.lastTurnMeta.textContent = measuring ? '' : copy.tpsLastTurnEmpty
   }
-
-  refs.charsPerSecond.textContent = snap !== null ? snap.charsPerSecond.toFixed(1) : '—'
-  refs.charsPerToken.textContent = snap !== null ? snap.charsPerToken.toFixed(3) : '—'
-  refs.sessionTokens.textContent = snap?.sessionUsage != null ? fmtInt(snap.sessionUsage.generated) : '—'
-  refs.connection.textContent = snap?.connection ?? '—'
-  refs.lastEvent.textContent = fmtAge(snap?.lastEventAt ?? null)
-  refs.events.textContent = snap !== null ? fmtInt(snap.eventsSeen) : '—'
 }
 
 /** 告诉服务看哪个会话（origin/会话变化时才发）。 */
