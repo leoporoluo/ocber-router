@@ -10,6 +10,7 @@
  */
 import { spawn } from 'node:child_process'
 import { gzipSync } from 'node:zlib'
+import http from 'node:http'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -112,7 +113,6 @@ try {
   // ---- opencode provider 同步 ----
   const state2 = await (await admin('/api/state')).json()
   check('opencode sync reported no error', state2.opencode?.error === undefined, String(state2.opencode?.error))
-  check('opencode sync mode default = combos', state2.opencode?.mode === 'combos', String(state2.opencode?.mode))
 
   const cfg = readConfig()
   check('existing provider keepme preserved', JSON.stringify(cfg.providers?.keepme) === JSON.stringify(originalProviders.keepme))
@@ -135,13 +135,6 @@ try {
   check('placeholder "default" filtered out', !ids.includes('codebuddy/default'))
   check('keepme preserved after second sync', JSON.stringify(cfg2.providers?.keepme) === JSON.stringify(originalProviders.keepme))
 
-  // 切到「启用模型 + 组合」再切回，provider 跟随（无账号时仍然只有组合）
-  await admin('/api/settings', { method: 'POST', body: JSON.stringify({ opencodeSyncMode: 'models' }) })
-  await admin('/api/opencode/sync', { method: 'POST' })
-  const cfg3 = readConfig()
-  check('mode switch keeps combos + drops alias models without accounts', Object.keys(cfg3.providers?.ocber?.models ?? {}).join(',') === 'smoke-combo', JSON.stringify(Object.keys(cfg3.providers?.ocber?.models ?? {})))
-  await admin('/api/settings', { method: 'POST', body: JSON.stringify({ opencodeSyncMode: 'combos' }) })
-
   const models2 = await (await fetch(`${base}/v1/models`)).json()
   check('combo listed in /v1/models', models2.data.some((m) => m.id === 'smoke-combo'))
   check('no alias models listed without accounts', !models2.data.some((m) => m.id.startsWith('codebuddy/')), JSON.stringify(models2.data.map((m) => m.id)))
@@ -163,6 +156,41 @@ try {
 
   const health = await fetch(`${base}/health`)
   check('public /health', health.status === 200, `status=${health.status}`)
+
+  // ---- TPS 仪表盘：起一个假的事件流，验证速率/校准/上一轮 ----
+  const sseServer = http.createServer((req, res) => {
+    if (!(req.url ?? '').startsWith('/api/global/event')) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+    const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`)
+    send({ type: 'session.execution.started', data: { sessionID: 'ses_smoke' } })
+    let i = 0
+    const timer = setInterval(() => {
+      i += 1
+      send({ type: 'session.text.delta', data: { sessionID: 'ses_smoke', assistantMessageID: 'msg_1', ordinal: 0, delta: 'x'.repeat(100) } })
+      if (i >= 20) {
+        clearInterval(timer)
+        send({ type: 'session.step.ended', data: { sessionID: 'ses_smoke', assistantMessageID: 'msg_1', tokens: { output: 500, reasoning: 0 } } })
+        send({ type: 'session.execution.succeeded', data: { sessionID: 'ses_smoke' } })
+      }
+    }, 40)
+    req.on('close', () => clearInterval(timer))
+  })
+  const ssePort = await new Promise((resolve) => sseServer.listen(0, '127.0.0.1', () => resolve(sseServer.address().port)))
+
+  await admin('/api/tps/watch', { method: 'POST', body: JSON.stringify({ origin: `http://127.0.0.1:${ssePort}`, sessionId: 'ses_smoke', title: 'smoke' }) })
+  await sleep(1400)
+  const tps1 = await (await admin('/api/tps')).json()
+  check('tps connection live', tps1.connection === 'live', String(tps1.connection))
+  check('tps counted streamed chars', tps1.chars > 0, JSON.stringify(tps1.chars))
+  check('tps charsPerSecond > 0', tps1.charsPerSecond > 0, String(tps1.charsPerSecond))
+  check('tps tokensPerSecond > 0', tps1.tokensPerSecond > 0, String(tps1.tokensPerSecond))
+  check('tps last turn recorded', tps1.lastTurn !== null && tps1.lastTurn.tokens > 0, JSON.stringify(tps1.lastTurn))
+  check('tps session id echoed', tps1.sessionId === 'ses_smoke', String(tps1.sessionId))
+  sseServer.close()
 
   console.log(failures === 0 ? '\nSMOKE OK' : `\nSMOKE FAILED (${failures})`)
 } catch (err) {

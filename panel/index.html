@@ -164,6 +164,59 @@
         color: var(--oc-muted);
       }
 
+      /* TPS 仪表盘 */
+      .oc-tps-readout {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+
+      .oc-tps-value {
+        font-size: 2.25rem;
+        line-height: 1;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .oc-tps-unit {
+        color: var(--oc-muted);
+        font-size: 0.8125rem;
+      }
+
+      .oc-tps-bar {
+        height: 6px;
+        border-radius: 999px;
+        background: var(--oc-selection);
+        overflow: hidden;
+      }
+
+      .oc-tps-bar-fill {
+        width: 100%;
+        height: 100%;
+        background: var(--oc-primary);
+        transform-origin: left center;
+        transform: scaleX(0);
+        transition: transform 160ms linear;
+      }
+
+      .oc-details {
+        margin: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 12px;
+        font-size: 0.8125rem;
+      }
+
+      .oc-detail-label {
+        color: var(--oc-muted);
+      }
+
+      .oc-detail-value {
+        margin: 0;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
       .oc-list {
         display: flex;
         flex-direction: column;

@@ -25,53 +25,29 @@ export function opencodeConfigPath(): string {
   return join(homedir(), '.config', 'opencode', 'opencode.json')
 }
 
-/** 目录长度归一：上游/兜底表的 context_length 有「k」和「tokens」两种口径。 */
-function normalizeContext(value: number | undefined): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined
-  return value < 10_000 ? value * 1000 : value
-}
-
 /** 上游配置里的占位项，不是可直选的模型。 */
 const HIDDEN_MODEL_IDS = new Set(['default'])
 
 interface ProviderModel {
   modelID: string
   name: string
-  limit?: { context: number }
   capabilities: { tools: boolean; input: string[]; output: string[] }
 }
 
 /**
- * provider 里要暴露的模型：
- *   - 只写 `别名/模型`（不写裸名，否则 OpenCode 的模型选择里每个模型出现两次）
- *   - 没账号的供应商整个跳过（模型当前不可用，见 app.supplierHasAccounts）
- *   - 组合永远带上（前提：至少一个目标可解析）
+ * provider 里要暴露的模型：**只有组合**（用户 2026-09-27 的决定）。
+ * 组合至少有一个可解析目标才收录；没账号的供应商不产生任何条目。
  */
 function buildModels(app: App): Record<string, ProviderModel> {
   const out: Record<string, ProviderModel> = {}
-  const add = (id: string, context?: number): void => {
-    if (HIDDEN_MODEL_IDS.has(id)) return
-    const limit = normalizeContext(context)
-    out[id] = {
-      modelID: id,
-      name: id,
-      ...(limit !== undefined ? { limit: { context: limit } } : {}),
+  for (const combo of app.comboViews()) {
+    if (!combo.targets.some((t) => t.ok)) continue
+    if (HIDDEN_MODEL_IDS.has(combo.name)) continue
+    out[combo.name] = {
+      modelID: combo.name,
+      name: combo.name,
       capabilities: { tools: true, input: ['text', 'image'], output: ['text'] },
     }
-  }
-
-  if (app.settings.get().opencodeSyncMode !== 'combos') {
-    for (const supplier of app.activeRuntimes()) {
-      const alias = app.aliasOf(supplier.module.id)
-      for (const model of app.modelViews(supplier.module.id)) {
-        if (!model.enabled) continue
-        add(`${alias}/${model.id}`, model.context_length)
-      }
-    }
-  }
-  for (const combo of app.comboViews()) {
-    // 至少一个目标可解析就收录：请求时会自动跳过无效目标
-    if (combo.targets.some((t) => t.ok)) add(combo.name)
   }
   return out
 }
@@ -83,7 +59,6 @@ export function syncOpencode(app: App, force = false): OpencodeSyncView {
 
   const view = (extra?: Partial<OpencodeSyncView>): OpencodeSyncView => ({
     enabled: settings.opencodeSync,
-    mode: settings.opencodeSyncMode,
     path,
     exists: existsSync(path),
     syncedAt: settings.opencodeSyncedAt,
@@ -96,7 +71,7 @@ export function syncOpencode(app: App, force = false): OpencodeSyncView {
   const models = buildModels(app)
   const modelCount = Object.keys(models).length
   const signature = createHash('sha1')
-    .update(JSON.stringify({ endpoint: app.endpoint(), mode: settings.opencodeSyncMode, models: Object.keys(models).sort() }))
+    .update(JSON.stringify({ endpoint: app.endpoint(), models: Object.keys(models).sort() }))
     .digest('hex')
   if (!force && signature === settings.opencodeSignature) {
     return view({ modelCount, syncedAt: settings.opencodeSyncedAt })

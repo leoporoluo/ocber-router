@@ -137,20 +137,57 @@ export interface SettingsView {
   port: number
   /** 自动把 provider 配置写进 ~/.config/opencode/opencode.json。 */
   opencodeSync: boolean
-  /** provider 里放什么：models = 启用模型 + 组合；combos = 只放组合。 */
-  opencodeSyncMode: 'models' | 'combos'
 }
 
 /** OpenCode provider 同步状态。 */
 export interface OpencodeSyncView {
   enabled: boolean
-  mode: 'models' | 'combos'
   path: string
   exists: boolean
   /** 上次成功写入时间（0 = 从未）。 */
   syncedAt: number
+  /** 写进 provider 的模型数（仅组合）。 */
   modelCount: number
   error?: string
+}
+
+/** 一轮生成的统计（TPS 仪表盘）。 */
+export interface TpsTurn {
+  tokensPerSecond: number
+  tokens: number
+  chars: number
+  activeMs: number
+  wallMs: number
+  pausedMs: number
+  endedAt: number
+  source: 'tokens' | 'estimate'
+}
+
+/** TPS 仪表盘快照（服务订阅 OpenChamber 事件流算出）。 */
+export interface TpsSnapshot {
+  connection: 'idle' | 'connecting' | 'live' | 'error'
+  error: string | null
+  sessionId: string | null
+  sessionTitle: string | null
+  busy: boolean
+  waiting: 'permission' | 'question' | null
+  windowMs: number
+  chars: number
+  charsPerSecond: number
+  tokensPerSecond: number
+  charsPerToken: number
+  lastTurn: TpsTurn | null
+  sessionUsage: {
+    cost: number
+    input: number
+    output: number
+    reasoning: number
+    cacheRead: number
+    cacheWrite: number
+    generated: number
+  } | null
+  eventsSeen: number
+  lastEventAt: number | null
 }
 
 /** 面板启动时拉一次的全量状态。 */

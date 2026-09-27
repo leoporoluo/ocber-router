@@ -383,21 +383,14 @@ interface SettingsFile {
   requireApiKey?: boolean
   port?: number
   opencodeSync?: boolean
-  opencodeSyncMode?: string
-  /** 模式迁移标记：0/缺失 = 0.1.4 之前的默认（models），要迁到 combos。 */
-  opencodeSyncModeVersion?: number
   opencodeSignature?: string
   opencodeSyncedAt?: number
 }
-
-export type OpencodeSyncMode = 'models' | 'combos'
 
 export interface ServiceSettings {
   port: number
   /** 自动把 provider 配置写进 ~/.config/opencode/opencode.json（默认开）。 */
   opencodeSync: boolean
-  /** provider 里放什么：models = 启用的模型 + 组合（默认）；combos = 只放组合。 */
-  opencodeSyncMode: OpencodeSyncMode
   /** 上次写入的内容指纹（没变就不重复写）。 */
   opencodeSignature: string
   opencodeSyncedAt: number
@@ -409,8 +402,6 @@ export class SettingsStore {
   private file: string
   private port: number
   private opencodeSync: boolean
-  private opencodeSyncMode: OpencodeSyncMode
-  private opencodeSyncModeVersion: number
   private opencodeSignature: string
   private opencodeSyncedAt: number
 
@@ -420,20 +411,14 @@ export class SettingsStore {
     const p = Number(raw?.port)
     this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT
     this.opencodeSync = typeof raw?.opencodeSync === 'boolean' ? raw.opencodeSync : true
-    // 默认「仅组合」：只有进了组合的模型才写进 provider（用户 2026-09-27 的要求）。
-    // 0.1.4 的 'models' 是旧默认值，不区分「用户选的」与「旧默认」，一并迁到 combos。
-    const modeVersion = Number(raw?.opencodeSyncModeVersion ?? 0)
-    this.opencodeSyncMode = modeVersion >= 1 && raw?.opencodeSyncMode === 'models' ? 'models' : 'combos'
     this.opencodeSignature = typeof raw?.opencodeSignature === 'string' ? raw.opencodeSignature : ''
     this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === 'number' ? raw.opencodeSyncedAt : 0
-    this.opencodeSyncModeVersion = Math.max(1, modeVersion)
   }
 
   get(): ServiceSettings {
     return {
       port: this.port,
       opencodeSync: this.opencodeSync,
-      opencodeSyncMode: this.opencodeSyncMode,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt,
     }
@@ -450,12 +435,6 @@ export class SettingsStore {
     this.save()
   }
 
-  setOpencodeSyncMode(mode: string): void {
-    this.opencodeSyncMode = mode === 'models' ? 'models' : 'combos'
-    this.opencodeSyncModeVersion = 1
-    this.save()
-  }
-
   /** 记录一次成功写入的指纹与时间。 */
   setOpencodeSyncState(signature: string, syncedAt: number): void {
     this.opencodeSignature = signature
@@ -467,8 +446,6 @@ export class SettingsStore {
     writeJson(this.file, {
       port: this.port,
       opencodeSync: this.opencodeSync,
-      opencodeSyncMode: this.opencodeSyncMode,
-      opencodeSyncModeVersion: this.opencodeSyncModeVersion,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt,
     })

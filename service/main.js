@@ -802,8 +802,6 @@ async function handleAdmin(deps, req, res, url) {
       app.keys.requireApiKey = bool(body.requireApiKey);
     if (body.opencodeSync !== undefined)
       app.settings.setOpencodeSync(bool(body.opencodeSync));
-    if (body.opencodeSyncMode !== undefined)
-      app.settings.setOpencodeSyncMode(str(body.opencodeSyncMode));
     if (body.port !== undefined) {
       const port = Number(body.port);
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
@@ -822,6 +820,26 @@ async function handleAdmin(deps, req, res, url) {
   }
   if (method === "POST" && path === "/api/opencode/sync") {
     writeJson(res, 200, { ok: true, opencode: app.syncOpencode(true) });
+    return;
+  }
+  if (method === "GET" && path === "/api/tps") {
+    writeJson(res, 200, app.tps.snapshot());
+    return;
+  }
+  if (method === "POST" && path === "/api/tps/watch") {
+    const body = await readBody(req);
+    const origin = str(body.origin).trim();
+    const sessionId = str(body.sessionId).trim() || null;
+    try {
+      const url2 = new URL(origin);
+      if (url2.protocol !== "http:" && url2.protocol !== "https:")
+        throw new Error("bad protocol");
+    } catch {
+      writeJson(res, 400, { error: "origin 不是合法的 http(s) 地址" });
+      return;
+    }
+    app.tps.watchSession({ origin, sessionId, title: str(body.title).trim() || null });
+    writeJson(res, 200, { ok: true, tps: app.tps.snapshot() });
     return;
   }
   const supplierOp = /^\/api\/suppliers\/([^/]+)\/(.+)$/.exec(path);
@@ -2230,8 +2248,6 @@ class SettingsStore {
   file;
   port;
   opencodeSync;
-  opencodeSyncMode;
-  opencodeSyncModeVersion;
   opencodeSignature;
   opencodeSyncedAt;
   constructor(dataDir) {
@@ -2240,17 +2256,13 @@ class SettingsStore {
     const p = Number(raw?.port);
     this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
     this.opencodeSync = typeof raw?.opencodeSync === "boolean" ? raw.opencodeSync : true;
-    const modeVersion = Number(raw?.opencodeSyncModeVersion ?? 0);
-    this.opencodeSyncMode = modeVersion >= 1 && raw?.opencodeSyncMode === "models" ? "models" : "combos";
     this.opencodeSignature = typeof raw?.opencodeSignature === "string" ? raw.opencodeSignature : "";
     this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === "number" ? raw.opencodeSyncedAt : 0;
-    this.opencodeSyncModeVersion = Math.max(1, modeVersion);
   }
   get() {
     return {
       port: this.port,
       opencodeSync: this.opencodeSync,
-      opencodeSyncMode: this.opencodeSyncMode,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt
     };
@@ -2265,11 +2277,6 @@ class SettingsStore {
     this.opencodeSync = enabled;
     this.save();
   }
-  setOpencodeSyncMode(mode) {
-    this.opencodeSyncMode = mode === "models" ? "models" : "combos";
-    this.opencodeSyncModeVersion = 1;
-    this.save();
-  }
   setOpencodeSyncState(signature, syncedAt) {
     this.opencodeSignature = signature;
     this.opencodeSyncedAt = syncedAt;
@@ -2279,8 +2286,6 @@ class SettingsStore {
     writeJson2(this.file, {
       port: this.port,
       opencodeSync: this.opencodeSync,
-      opencodeSyncMode: this.opencodeSyncMode,
-      opencodeSyncModeVersion: this.opencodeSyncModeVersion,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt
     });
@@ -2296,38 +2301,19 @@ var OPENCODE_PROVIDER_ID = "ocber";
 function opencodeConfigPath() {
   return join3(homedir2(), ".config", "opencode", "opencode.json");
 }
-function normalizeContext(value) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
-    return;
-  return value < 1e4 ? value * 1000 : value;
-}
 var HIDDEN_MODEL_IDS = new Set(["default"]);
 function buildModels(app) {
   const out = {};
-  const add = (id, context) => {
-    if (HIDDEN_MODEL_IDS.has(id))
-      return;
-    const limit = normalizeContext(context);
-    out[id] = {
-      modelID: id,
-      name: id,
-      ...limit !== undefined ? { limit: { context: limit } } : {},
+  for (const combo of app.comboViews()) {
+    if (!combo.targets.some((t) => t.ok))
+      continue;
+    if (HIDDEN_MODEL_IDS.has(combo.name))
+      continue;
+    out[combo.name] = {
+      modelID: combo.name,
+      name: combo.name,
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] }
     };
-  };
-  if (app.settings.get().opencodeSyncMode !== "combos") {
-    for (const supplier of app.activeRuntimes()) {
-      const alias = app.aliasOf(supplier.module.id);
-      for (const model of app.modelViews(supplier.module.id)) {
-        if (!model.enabled)
-          continue;
-        add(`${alias}/${model.id}`, model.context_length);
-      }
-    }
-  }
-  for (const combo of app.comboViews()) {
-    if (combo.targets.some((t) => t.ok))
-      add(combo.name);
   }
   return out;
 }
@@ -2336,7 +2322,6 @@ function syncOpencode(app, force = false) {
   const path = opencodeConfigPath();
   const view = (extra) => ({
     enabled: settings.opencodeSync,
-    mode: settings.opencodeSyncMode,
     path,
     exists: existsSync(path),
     syncedAt: settings.opencodeSyncedAt,
@@ -2347,7 +2332,7 @@ function syncOpencode(app, force = false) {
     return view();
   const models = buildModels(app);
   const modelCount = Object.keys(models).length;
-  const signature = createHash2("sha1").update(JSON.stringify({ endpoint: app.endpoint(), mode: settings.opencodeSyncMode, models: Object.keys(models).sort() })).digest("hex");
+  const signature = createHash2("sha1").update(JSON.stringify({ endpoint: app.endpoint(), models: Object.keys(models).sort() })).digest("hex");
   if (!force && signature === settings.opencodeSignature) {
     return view({ modelCount, syncedAt: settings.opencodeSyncedAt });
   }
@@ -2391,8 +2376,404 @@ function syncOpencode(app, force = false) {
   }
 }
 
+// src/service/tps.ts
+var WINDOW_MS = 5000;
+var SAMPLE_LIMIT = 20000;
+var RETRY_BASE_MS = 1000;
+var RETRY_MAX_MS = 15000;
+var DEFAULT_CHARS_PER_TOKEN = 0.25;
+var MIN_CHARS_PER_TOKEN = 0.05;
+var MAX_CHARS_PER_TOKEN = 1;
+var CALIBRATION_WEIGHT = 0.3;
+var MIN_CALIBRATION_CHARS = 40;
+var MAX_STREAM_GAP_MS = 1000;
+function readString(v) {
+  return typeof v === "string" ? v : "";
+}
+function readNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function readRecord(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? v : undefined;
+}
+
+class TpsTracker {
+  watch = null;
+  controller = null;
+  retryTimer = null;
+  retryDelay = RETRY_BASE_MS;
+  connection = "idle";
+  lastError = null;
+  samples = [];
+  messageChars = new Map;
+  countedParts = new Set;
+  stepTokens = new Map;
+  charsPerToken = DEFAULT_CHARS_PER_TOKEN;
+  turnChars = 0;
+  turnTokens = 0;
+  turnSawTokens = false;
+  turnStartedAt = null;
+  lastCharAt = null;
+  activeMs = 0;
+  lastTurn = null;
+  busy = false;
+  pendingPermissions = new Set;
+  pendingQuestions = new Set;
+  sessionUsage = null;
+  eventsSeen = 0;
+  lastEventAt = null;
+  watchSession(config) {
+    const same = this.watch !== null && this.watch.origin === config.origin && this.watch.sessionId === config.sessionId;
+    this.watch = config;
+    if (same) {
+      this.watch.title = config.title;
+      return;
+    }
+    this.resetSession();
+    this.lastError = null;
+    this.connection = "idle";
+    this.startStream();
+  }
+  stop() {
+    this.watch = null;
+    this.controller?.abort();
+    this.controller = null;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.connection = "idle";
+  }
+  snapshot() {
+    const now = Date.now();
+    const cutoff = now - WINDOW_MS;
+    while (this.samples.length > 0 && this.samples[0].at < cutoff)
+      this.samples.shift();
+    const chars = this.samples.reduce((n, s) => n + s.chars, 0);
+    const charsPerSecond = chars / (WINDOW_MS / 1000);
+    const waiting = this.pendingPermissions.size > 0 ? "permission" : this.pendingQuestions.size > 0 ? "question" : null;
+    return {
+      connection: this.connection,
+      error: this.lastError,
+      sessionId: this.watch?.sessionId ?? null,
+      sessionTitle: this.watch?.title ?? null,
+      busy: this.busy,
+      waiting,
+      windowMs: WINDOW_MS,
+      chars,
+      charsPerSecond: Math.round(charsPerSecond * 10) / 10,
+      tokensPerSecond: Math.round(charsPerSecond * this.charsPerToken * 10) / 10,
+      charsPerToken: Math.round(this.charsPerToken * 1000) / 1000,
+      lastTurn: this.lastTurn,
+      sessionUsage: this.sessionUsage,
+      eventsSeen: this.eventsSeen,
+      lastEventAt: this.lastEventAt
+    };
+  }
+  resetSession() {
+    this.samples = [];
+    this.messageChars.clear();
+    this.countedParts.clear();
+    this.stepTokens.clear();
+    this.turnChars = 0;
+    this.turnTokens = 0;
+    this.turnSawTokens = false;
+    this.turnStartedAt = null;
+    this.lastCharAt = null;
+    this.activeMs = 0;
+    this.lastTurn = null;
+    this.busy = false;
+    this.pendingPermissions.clear();
+    this.pendingQuestions.clear();
+    this.sessionUsage = null;
+    this.eventsSeen = 0;
+    this.lastEventAt = null;
+  }
+  scheduleReconnect(message) {
+    this.lastError = message;
+    this.connection = "error";
+    if (this.watch === null || this.retryTimer !== null)
+      return;
+    const delay = this.retryDelay;
+    this.retryDelay = Math.min(RETRY_MAX_MS, this.retryDelay * 2);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.startStream();
+    }, delay);
+  }
+  async startStream() {
+    const current = this.watch;
+    if (current === null || current.sessionId === null)
+      return;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.controller?.abort();
+    const local = new AbortController;
+    this.controller = local;
+    this.connection = "connecting";
+    try {
+      const response = await fetch(new URL("/api/global/event", current.origin), {
+        headers: { Accept: "text/event-stream" },
+        signal: local.signal
+      });
+      if (!response.ok || response.body === null) {
+        this.scheduleReconnect(`事件流返回 HTTP ${response.status}`);
+        return;
+      }
+      this.connection = "live";
+      this.retryDelay = RETRY_BASE_MS;
+      this.lastEventAt = Date.now();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder;
+      let buffer = "";
+      for (;; ) {
+        const { value, done } = await reader.read();
+        if (done)
+          break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split(`
+
+`);
+        buffer = chunks.pop() ?? "";
+        for (const chunk of chunks)
+          this.handleSseChunk(chunk);
+      }
+      this.scheduleReconnect("事件流已断开");
+    } catch (err) {
+      if (local.signal.aborted)
+        return;
+      this.scheduleReconnect(err.message);
+    }
+  }
+  handleSseChunk(chunk) {
+    const data = [];
+    for (const line of chunk.split(`
+`)) {
+      if (line.startsWith("data:"))
+        data.push(line.slice(5).trimStart());
+    }
+    if (data.length === 0)
+      return;
+    let parsed;
+    try {
+      parsed = JSON.parse(data.join(`
+`));
+    } catch {
+      return;
+    }
+    const envelope = readRecord(parsed);
+    if (envelope === undefined)
+      return;
+    const inner = readRecord(envelope.payload) ?? envelope;
+    this.eventsSeen += 1;
+    this.handleEvent(inner, Date.now());
+  }
+  isWatched(sessionId) {
+    return this.watch !== null && this.watch.sessionId !== null && sessionId === this.watch.sessionId;
+  }
+  recordChars(messageId, chars, now) {
+    if (chars <= 0)
+      return;
+    this.samples.push({ at: now, chars });
+    if (this.samples.length > SAMPLE_LIMIT)
+      this.samples.splice(0, this.samples.length - SAMPLE_LIMIT);
+    if (messageId !== "")
+      this.messageChars.set(messageId, (this.messageChars.get(messageId) ?? 0) + chars);
+    this.turnChars += chars;
+    if (this.lastCharAt !== null && now - this.lastCharAt <= MAX_STREAM_GAP_MS)
+      this.activeMs += now - this.lastCharAt;
+    this.lastCharAt = now;
+    this.lastEventAt = now;
+  }
+  calibrate(messageId, generated) {
+    if (messageId === "")
+      return;
+    const chars = this.messageChars.get(messageId) ?? 0;
+    if (chars < MIN_CALIBRATION_CHARS || generated <= 0)
+      return;
+    const ratio = Math.min(MAX_CHARS_PER_TOKEN, Math.max(MIN_CHARS_PER_TOKEN, generated / chars));
+    this.charsPerToken = this.charsPerToken + (ratio - this.charsPerToken) * CALIBRATION_WEIGHT;
+  }
+  finalizeTurn(now) {
+    if (this.turnStartedAt === null && this.turnChars === 0)
+      return;
+    const wallMs = this.turnStartedAt === null ? 0 : now - this.turnStartedAt;
+    const active = Math.max(this.activeMs, this.turnChars > 0 ? 1 : 0);
+    const tokens = this.turnSawTokens ? this.turnTokens : this.turnChars * this.charsPerToken;
+    if (tokens > 0 && active > 0) {
+      this.lastTurn = {
+        tokensPerSecond: Math.round(tokens / (active / 1000) * 10) / 10,
+        tokens: Math.round(tokens),
+        chars: this.turnChars,
+        activeMs: Math.round(active),
+        wallMs,
+        pausedMs: Math.max(0, wallMs - Math.round(active)),
+        endedAt: now,
+        source: this.turnSawTokens ? "tokens" : "estimate"
+      };
+    }
+    this.turnChars = 0;
+    this.turnTokens = 0;
+    this.turnSawTokens = false;
+    this.turnStartedAt = null;
+    this.lastCharAt = null;
+    this.activeMs = 0;
+  }
+  handleEvent(event, now) {
+    const type = readString(event.type);
+    if (type === "")
+      return;
+    const payload = readRecord(event.data) ?? readRecord(event.properties);
+    if (payload === undefined)
+      return;
+    this.lastEventAt = now;
+    if (type === "session.text.delta" || type === "session.reasoning.delta") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      const messageId = readString(payload.assistantMessageID);
+      const delta = readString(payload.delta);
+      if (delta === "")
+        return;
+      const partId = `${messageId}:${type === "session.reasoning.delta" ? "r" : "t"}:${String(payload.ordinal ?? "")}`;
+      this.countedParts.add(partId);
+      this.recordChars(messageId, delta.length, now);
+      return;
+    }
+    if (type === "session.text.ended" || type === "session.reasoning.ended") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      const messageId = readString(payload.assistantMessageID);
+      const partId = `${messageId}:${type === "session.reasoning.ended" ? "r" : "t"}:${String(payload.ordinal ?? "")}`;
+      if (this.countedParts.has(partId))
+        return;
+      const text = readString(payload.text);
+      if (text === "")
+        return;
+      this.recordChars(messageId, text.length, now);
+      return;
+    }
+    if (type === "session.step.ended" || type === "session.step.failed") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      const tokens = readRecord(payload.tokens);
+      if (tokens === undefined)
+        return;
+      const messageId = readString(payload.assistantMessageID);
+      const generated = readNumber(tokens.output) + readNumber(tokens.reasoning);
+      if (generated <= 0)
+        return;
+      this.calibrate(messageId, generated);
+      const previous = this.stepTokens.get(messageId) ?? 0;
+      this.stepTokens.set(messageId, generated);
+      this.turnTokens += generated - previous;
+      if (generated > previous)
+        this.turnSawTokens = true;
+      return;
+    }
+    if (type === "session.usage.updated") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      const tokens = readRecord(payload.tokens);
+      if (tokens === undefined)
+        return;
+      const cache = readRecord(tokens.cache);
+      const output = readNumber(tokens.output);
+      const reasoning = readNumber(tokens.reasoning);
+      this.sessionUsage = {
+        cost: readNumber(payload.cost),
+        input: readNumber(tokens.input),
+        output,
+        reasoning,
+        cacheRead: readNumber(cache?.read),
+        cacheWrite: readNumber(cache?.write),
+        generated: output + reasoning
+      };
+      return;
+    }
+    if (type === "session.execution.started") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      if (this.turnStartedAt === null)
+        this.turnStartedAt = now;
+      this.busy = true;
+      return;
+    }
+    if (type === "session.execution.succeeded" || type === "session.execution.failed") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      this.busy = false;
+      this.finalizeTurn(now);
+      return;
+    }
+    if (type === "session.execution.interrupted") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      if (readString(payload.reason) === "shutdown")
+        return;
+      this.busy = false;
+      this.finalizeTurn(now);
+      return;
+    }
+    if (type === "session.idle") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      this.busy = false;
+      this.finalizeTurn(now);
+      return;
+    }
+    if (type === "permission.asked" || type === "permission.v2.asked") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      const id = readString(payload.id);
+      if (id !== "")
+        this.pendingPermissions.add(id);
+      return;
+    }
+    if (type === "permission.replied" || type === "permission.v2.replied") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      this.pendingPermissions.delete(readString(payload.requestID));
+      return;
+    }
+    if (type === "form.created") {
+      const form = readRecord(payload.form);
+      if (form === undefined || !this.isWatched(readString(form.sessionID)))
+        return;
+      const id = readString(form.id);
+      if (id !== "")
+        this.pendingQuestions.add(id);
+      return;
+    }
+    if (type === "form.replied" || type === "form.cancelled") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      this.pendingQuestions.delete(readString(payload.id));
+      return;
+    }
+    if (type === "question.asked" || type === "question.v2.asked") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      const id = readString(payload.id);
+      if (id !== "")
+        this.pendingQuestions.add(id);
+      return;
+    }
+    if (type === "question.replied" || type === "question.rejected" || type === "question.v2.replied" || type === "question.v2.rejected") {
+      if (!this.isWatched(readString(payload.sessionID)))
+        return;
+      this.pendingQuestions.delete(readString(payload.requestID));
+    }
+  }
+  dispose() {
+    this.stop();
+  }
+}
+
 // src/service/app.ts
-var VERSION = "0.1.5";
+var VERSION = "0.1.6";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
@@ -2403,6 +2784,7 @@ class App {
   keys;
   settings;
   usage;
+  tps = new TpsTracker;
   runtimes;
   startedAt = Date.now();
   endpointPort = 0;
@@ -2716,8 +3098,7 @@ class App {
     return {
       requireApiKey: this.keys.requireApiKey,
       port: this.settings.get().port || this.endpointPort || DEFAULT_PORT,
-      opencodeSync: this.settings.get().opencodeSync,
-      opencodeSyncMode: this.settings.get().opencodeSyncMode
+      opencodeSync: this.settings.get().opencodeSync
     };
   }
   state() {
@@ -2737,6 +3118,7 @@ class App {
     };
   }
   dispose() {
+    this.tps.dispose();
     for (const r of this.runtimes) {
       try {
         r.module.dispose();

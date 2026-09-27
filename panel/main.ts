@@ -32,6 +32,7 @@ import type {
   StatsResult,
   SupplierDetailView,
   SupplierView,
+  TpsSnapshot,
   UsageRecordView,
 } from '../src/shared/types.ts'
 
@@ -97,9 +98,6 @@ const COPY = {
     period24h: '24 小时',
     period7d: '7 天',
     period30d: '30 天',
-    topSuppliers: 'Top 供应商',
-    topModels: 'Top 模型',
-    recent: '最近请求',
     clearStats: '清空统计',
     combosTitle: '组合（fallback 链）',
     comboName: '组合名',
@@ -132,15 +130,35 @@ const COPY = {
     syncNever: '从未',
     syncModels: '模型数',
     syncFailed: '同步失败',
-    syncMode: '同步内容',
-    syncModeAll: '启用模型 + 组合',
-    syncModeCombos: '仅组合（默认）',
-    syncModeHint: '只有加进组合的模型才写进 provider，模型选择里不会出现一堆用不上的模型。',
     noAccountsModels: '未添加账号：模型暂不参与路由与同步，添加链接后自动恢复。',
     noAccountsShort: '未添加账号',
     edit: '编辑',
     editCancel: '取消编辑',
     editingCombo: '正在编辑',
+    tpsTitle: 'TPS 仪表盘',
+    tpsUnit: 'tok/s',
+    tpsWindow: '近 5 秒滚动',
+    tpsGenerating: '生成中',
+    tpsIdle: '空闲',
+    tpsConnecting: '连接中',
+    tpsReconnecting: '重连中',
+    tpsAsleep: '未连接',
+    tpsWaitingPermission: '等待授权',
+    tpsWaitingAnswer: '等待回答',
+    tpsLastTurn: '上一轮平均速率',
+    tpsLastTurnEmpty: '暂无已完成的轮次。',
+    tpsLastTurnPending: '测量中',
+    tpsEstimated: '估算',
+    tpsActive: '生成',
+    tpsPaused: '暂停',
+    tpsCharsPerSecond: '字符/秒',
+    tpsCharsPerToken: '每 token 字符数',
+    tpsSessionTokens: '会话 token 数',
+    tpsStatus: '状态',
+    tpsLastEvent: '最近事件',
+    tpsEvents: '事件数',
+    tpsNoOrigin: '当前界面拿不到 OpenChamber 地址（中继或内嵌视图），TPS 仪表盘不可用。',
+    tpsNote: 'token 数由流式输出的字符推算，并以已完成的轮次校准。',
   },
   en: {
     title: 'OCBer Router',
@@ -199,9 +217,6 @@ const COPY = {
     period24h: '24h',
     period7d: '7d',
     period30d: '30d',
-    topSuppliers: 'Top suppliers',
-    topModels: 'Top models',
-    recent: 'Recent requests',
     clearStats: 'Clear stats',
     combosTitle: 'Combos (fallback chain)',
     comboName: 'Combo name',
@@ -234,15 +249,35 @@ const COPY = {
     syncNever: 'never',
     syncModels: 'Models',
     syncFailed: 'Sync failed',
-    syncMode: 'Contents',
-    syncModeAll: 'Enabled models + combos',
-    syncModeCombos: 'Combos only (default)',
-    syncModeHint: 'Only models added to a combo are written to the provider; the picker stays short.',
     noAccountsModels: 'No account yet: these models stay out of routing and sync until a link is added.',
     noAccountsShort: 'no account',
     edit: 'Edit',
     editCancel: 'Cancel edit',
     editingCombo: 'Editing',
+    tpsTitle: 'TPS Meter',
+    tpsUnit: 'tok/s',
+    tpsWindow: 'rolling 5 s',
+    tpsGenerating: 'generating',
+    tpsIdle: 'idle',
+    tpsConnecting: 'connecting',
+    tpsReconnecting: 'reconnecting',
+    tpsAsleep: 'not connected',
+    tpsWaitingPermission: 'waiting for permission',
+    tpsWaitingAnswer: 'waiting for answer',
+    tpsLastTurn: 'Last turn average',
+    tpsLastTurnEmpty: 'No finished turn yet.',
+    tpsLastTurnPending: 'measuring',
+    tpsEstimated: 'estimated',
+    tpsActive: 'generating',
+    tpsPaused: 'paused',
+    tpsCharsPerSecond: 'Characters/s',
+    tpsCharsPerToken: 'Chars per token',
+    tpsSessionTokens: 'Session tokens',
+    tpsStatus: 'Status',
+    tpsLastEvent: 'Last event',
+    tpsEvents: 'Events seen',
+    tpsNoOrigin: 'This surface cannot reach the OpenChamber server (relay or embedded view).',
+    tpsNote: 'Tokens are estimated from streamed characters, calibrated with completed turns.',
   },
 } as const
 
@@ -276,6 +311,26 @@ let refreshing = false
 let stopped = false
 let jobActive = false
 let noticeTimer: number | null = null
+
+/** TPS 仪表盘状态。 */
+let tps: TpsSnapshot | null = null
+let watchedKey = ''
+let currentSession: { id: string; title: string } | null = null
+let peakTps = 0
+let tpsRefs: {
+  value: HTMLElement
+  badge: ReturnType<typeof mountBadge>
+  fill: HTMLElement
+  session: HTMLElement
+  lastTurnValue: HTMLElement
+  lastTurnMeta: HTMLElement
+  charsPerSecond: HTMLElement
+  charsPerToken: HTMLElement
+  sessionTokens: HTMLElement
+  connection: HTMLElement
+  lastEvent: HTMLElement
+  events: HTMLElement
+} | null = null
 
 let noticeRoot: HTMLElement
 let headRoot: HTMLElement
@@ -503,16 +558,22 @@ function empty(text: string): HTMLElement {
   return el('div', 'oc-empty', text)
 }
 
-function rankList(rows: StatsResult['bySupplier']): HTMLElement {
-  const list = el('div', 'oc-list')
-  if (rows.length === 0) return empty(copy.noData)
-  for (const row of rows.slice(0, 8)) {
-    const item = el('div', 'oc-item-main')
-    item.append(el('div', 'oc-item-title', row.name))
-    item.append(el('div', 'oc-num', `${fmtInt(row.requests)} · ${fmtTokens(row.promptTokens + row.completionTokens)}`))
-    list.append(item)
+/** 距最近事件的秒数。 */
+function fmtAge(lastEventAt: number | null): string {
+  if (lastEventAt === null || lastEventAt === 0) return '—'
+  const seconds = Math.max(0, (Date.now() - lastEventAt) / 1000)
+  return seconds < 1 ? '<1 s' : `${seconds.toFixed(0)} s`
+}
+
+/** 面板自己的 origin（沙箱 iframe 里可能是 about:srcdoc，取不到就返回 null）。 */
+function panelOrigin(): string | null {
+  try {
+    const url = new URL(window.location.href)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.origin
+  } catch {
+    // about:srcdoc 或 opaque origin
   }
-  return list
+  return null
 }
 
 function chartView(): HTMLElement {
@@ -532,11 +593,162 @@ function chartView(): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
+// TPS 仪表盘（服务订阅 OpenChamber 事件流算出，面板只轮询快照）
+// ---------------------------------------------------------------------------
+
+/** 建一次卡并把元素句柄存起来，之后就地更新（500ms 一次，不能整页重画）。 */
+function buildTpsCard(): HTMLElement {
+  const card = el('section', 'oc-card')
+  const head = el('div', 'oc-card-head')
+  head.append(el('h2', 'oc-card-title', copy.tpsTitle))
+  const badgeSlot = el('span')
+  head.append(badgeSlot)
+
+  const valueRow = el('div', 'oc-tps-readout')
+  const value = el('span', 'oc-tps-value', '0.0')
+  const unit = el('span', 'oc-tps-unit', copy.tpsUnit)
+  valueRow.append(value, unit)
+  const windowLine = el('div', 'oc-item-sub', copy.tpsWindow)
+  const bar = el('div', 'oc-tps-bar')
+  const fill = el('div', 'oc-tps-bar-fill')
+  bar.append(fill)
+  const session = el('div', 'oc-item-sub', copy.noData)
+
+  const lastTurnWrap = el('div', 'oc-item')
+  lastTurnWrap.append(el('div', 'oc-item-sub', copy.tpsLastTurn))
+  const lastTurnValue = el('div', 'oc-item-title', '—')
+  const lastTurnMeta = el('div', 'oc-item-sub', '')
+  lastTurnWrap.append(lastTurnValue, lastTurnMeta)
+
+  const details = el('dl', 'oc-details')
+  const detailRow = (label: string): HTMLElement => {
+    const valueNode = el('dd', 'oc-detail-value', '—')
+    details.append(el('dt', 'oc-detail-label', label), valueNode)
+    return valueNode
+  }
+  const charsPerSecond = detailRow(copy.tpsCharsPerSecond)
+  const charsPerToken = detailRow(copy.tpsCharsPerToken)
+  const sessionTokens = detailRow(copy.tpsSessionTokens)
+  const connection = detailRow(copy.tpsStatus)
+  const lastEvent = detailRow(copy.tpsLastEvent)
+  const events = detailRow(copy.tpsEvents)
+
+  card.append(head, valueRow, windowLine, bar, session, lastTurnWrap, details)
+  tpsRefs = {
+    value,
+    badge: mountBadge(badgeSlot, { label: copy.tpsConnecting, tone: 'neutral' }),
+    fill,
+    session,
+    lastTurnValue,
+    lastTurnMeta,
+    charsPerSecond,
+    charsPerToken,
+    sessionTokens,
+    connection,
+    lastEvent,
+    events,
+  }
+  return card
+}
+
+/** 把快照画进已建好的卡（缺 refs 时忽略）。 */
+function renderTps(): void {
+  const refs = tpsRefs
+  if (refs === null) return
+  const snap = tps
+  const origin = panelOrigin()
+
+  if (origin === null) {
+    refs.session.textContent = copy.tpsNoOrigin
+    refs.badge.update({ label: copy.tpsAsleep, tone: 'neutral' })
+    return
+  }
+
+  const value = snap !== null && Number.isFinite(snap.tokensPerSecond) ? snap.tokensPerSecond : 0
+  refs.value.textContent = value.toFixed(1)
+  const peak = Math.max(value, peakTps * 0.99)
+  peakTps = peak
+  refs.fill.style.transform = `scaleX(${peak > 0.05 ? Math.min(1, value / peak).toFixed(4) : '0'})`
+
+  const status = ((): { label: string; tone: 'neutral' | 'success' | 'warning' } => {
+    if (snap === null) return { label: copy.tpsConnecting, tone: 'neutral' }
+    if (snap.connection === 'error') return { label: copy.tpsReconnecting, tone: 'warning' }
+    if (snap.connection === 'connecting') return { label: copy.tpsConnecting, tone: 'neutral' }
+    if (snap.connection === 'idle') return { label: copy.tpsAsleep, tone: 'neutral' }
+    if (snap.waiting === 'permission') return { label: copy.tpsWaitingPermission, tone: 'warning' }
+    if (snap.waiting === 'question') return { label: copy.tpsWaitingAnswer, tone: 'warning' }
+    if (snap.busy) return { label: copy.tpsGenerating, tone: 'success' }
+    return { label: copy.tpsIdle, tone: 'neutral' }
+  })()
+  refs.badge.update(status)
+
+  refs.session.textContent = snap?.sessionTitle ?? currentSession?.title ?? copy.noData
+
+  const turn = snap?.lastTurn ?? null
+  if (turn !== null) {
+    refs.lastTurnValue.textContent = `${turn.tokensPerSecond.toFixed(1)} ${copy.tpsUnit}`
+    const parts = [`${fmtInt(turn.tokens)} tok`, `${(turn.activeMs / 1000).toFixed(1)} s (${copy.tpsActive})`]
+    if (turn.pausedMs >= 1000) parts.push(`${copy.tpsPaused} ${(turn.pausedMs / 1000).toFixed(1)} s`)
+    if (turn.source === 'estimate') parts.push(copy.tpsEstimated)
+    refs.lastTurnMeta.textContent = parts.join(' · ')
+  } else {
+    const measuring = snap?.busy === true
+    refs.lastTurnValue.textContent = measuring ? copy.tpsLastTurnPending : '—'
+    refs.lastTurnMeta.textContent = measuring ? '' : copy.tpsLastTurnEmpty
+  }
+
+  refs.charsPerSecond.textContent = snap !== null ? snap.charsPerSecond.toFixed(1) : '—'
+  refs.charsPerToken.textContent = snap !== null ? snap.charsPerToken.toFixed(3) : '—'
+  refs.sessionTokens.textContent = snap?.sessionUsage != null ? fmtInt(snap.sessionUsage.generated) : '—'
+  refs.connection.textContent = snap?.connection ?? '—'
+  refs.lastEvent.textContent = fmtAge(snap?.lastEventAt ?? null)
+  refs.events.textContent = snap !== null ? fmtInt(snap.eventsSeen) : '—'
+}
+
+/** 告诉服务看哪个会话（origin/会话变化时才发）。 */
+async function syncTpsWatch(): Promise<boolean> {
+  const origin = panelOrigin()
+  if (origin === null) return false
+  const key = `${origin}|${currentSession?.id ?? ''}`
+  if (key === watchedKey) return true
+  try {
+    await api('POST', '/api/tps/watch', { origin, sessionId: currentSession?.id ?? null, title: currentSession?.title ?? null })
+    watchedKey = key
+    return true
+  } catch {
+    watchedKey = ''
+    return false
+  }
+}
+
+async function pollTps(): Promise<void> {
+  if (!(await syncTpsWatch())) {
+    renderTps()
+    return
+  }
+  try {
+    tps = await api<TpsSnapshot>('GET', '/api/tps')
+  } catch {
+    // 保留上一份快照
+  }
+  renderTps()
+}
+
+// ---------------------------------------------------------------------------
 // 概览
 // ---------------------------------------------------------------------------
 
 function renderOverview(): HTMLElement {
-  const frag = document.createDocumentFragment()
+  const wrap = el('div')
+  wrap.style.display = 'flex'
+  wrap.style.flexDirection = 'column'
+  wrap.style.gap = '12px'
+
+  // TPS 仪表盘置顶；下面才是路由用量看板（周期/汇总/趋势）
+  tpsRefs = null
+  wrap.append(buildTpsCard())
+  void pollTps()
+
   const periodLabels: Array<[Period, string]> = [
     ['today', copy.periodToday],
     ['24h', copy.period24h],
@@ -552,7 +764,6 @@ function renderOverview(): HTMLElement {
       void loadStats().then(renderBody).catch((error) => notify(describeError(error), 'error'))
     },
   })
-  frag.append(periodTabsRoot)
 
   const successRate = stats !== null && stats.requests > 0 ? `${((stats.ok / stats.requests) * 100).toFixed(1)}%` : '—'
   const grid = el('div', 'oc-grid')
@@ -575,42 +786,7 @@ function renderOverview(): HTMLElement {
         .catch((error) => notify(describeError(error), 'error'))
     },
   })
-  frag.append(cardWithTitle(copy.tabOverview, clearBtn, [grid, chartView()]))
-
-  const topWrap = el('div')
-  topWrap.style.display = 'grid'
-  topWrap.style.gap = '12px'
-  topWrap.append(
-    cardWithTitle(copy.topSuppliers, null, [rankList(stats?.bySupplier ?? [])]),
-    cardWithTitle(copy.topModels, null, [rankList(stats?.byModel ?? [])]),
-  )
-  frag.append(topWrap)
-
-  const recentCard = cardWithTitle(copy.recent, null, [
-    recent.length === 0
-      ? empty(copy.noData)
-      : (() => {
-          const list = el('div', 'oc-list')
-          for (const r of recent.slice(0, 10)) {
-            const item = el('div', 'oc-item')
-            const main = el('div', 'oc-item-main')
-            main.append(el('div', 'oc-item-title', r.requested || r.model))
-            main.append(el('div', 'oc-num', r.ok ? fmtMs(r.durationMs) : copy.failed))
-            const sub = el('div', 'oc-item-sub')
-            sub.textContent = `${new Date(r.ts).toLocaleTimeString()} · ${r.supplier} · in ${fmtTokens(r.promptTokens)} / out ${fmtTokens(r.completionTokens)}${r.cachedTokens > 0 ? ` / cache ${fmtTokens(r.cachedTokens)}` : ''}${r.error !== undefined ? ` · ${r.error}` : ''}`
-            item.append(main, sub)
-            list.append(item)
-          }
-          return list
-        })(),
-  ])
-  frag.append(recentCard)
-
-  const wrap = el('div')
-  wrap.style.display = 'flex'
-  wrap.style.flexDirection = 'column'
-  wrap.style.gap = '12px'
-  wrap.append(frag)
+  wrap.append(cardWithTitle(copy.tabOverview, clearBtn, [periodTabsRoot, grid, chartView()]))
   return wrap
 }
 
@@ -1154,20 +1330,6 @@ function renderEndpoint(): HTMLElement {
       .then(() => reload())
       .catch((error) => notify(describeError(error), 'error'))
   })
-  const syncModeWrap = el('div')
-  mountSelect(syncModeWrap, {
-    label: copy.syncMode,
-    value: sync?.mode ?? 'models',
-    options: [
-      { id: 'combos', label: copy.syncModeCombos, hint: copy.syncModeHint },
-      { id: 'models', label: copy.syncModeAll },
-    ],
-    onChange: (id) => {
-      void api('POST', '/api/settings', { opencodeSyncMode: id })
-        .then(() => reload())
-        .catch((error) => notify(describeError(error), 'error'))
-    },
-  })
   const syncStatusRow = el('div', 'oc-row')
   const syncInfo = el('div', 'oc-grow')
   const syncState =
@@ -1192,7 +1354,7 @@ function renderEndpoint(): HTMLElement {
     },
   })
   syncStatusRow.append(syncInfo, syncNowWrap)
-  wrap.append(cardWithTitle(copy.opencodeTitle, null, [syncRow, syncModeWrap, syncStatusRow]))
+  wrap.append(cardWithTitle(copy.opencodeTitle, null, [syncRow, syncStatusRow]))
 
   // API keys
   let keyNameDraft = ''
@@ -1359,11 +1521,24 @@ function mount(): void {
     }, 15_000)
   }
   loop()
+
+  // TPS 用独立的小节奏轮询（只更新卡片里的数字，不重画页面）
+  const tpsLoop = (): void => {
+    if (stopped) return
+    window.setTimeout(() => {
+      void (async () => {
+        if (!document.hidden && tab === 'overview') await pollTps()
+        tpsLoop()
+      })()
+    }, 500)
+  }
+  tpsLoop()
 }
 
 host.onReady((ctx) => {
   copy = resolveCopy(ctx.locale)
   applyHostReady(ctx, document.documentElement)
+  currentSession = ctx.session !== null ? { id: ctx.session.id, title: ctx.session.title } : null
   if (!mounted) {
     mounted = true
     mount()
@@ -1371,6 +1546,11 @@ host.onReady((ctx) => {
   }
   renderTabs()
   renderBody()
+})
+
+host.onSession((session) => {
+  currentSession = session !== null ? { id: session.id, title: session.title } : null
+  watchedKey = ''
 })
 
 // 面板打开时立刻触发一次 serviceRequest，让宿主把本地服务拉起来。

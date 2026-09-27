@@ -150,7 +150,6 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
     const body = await readBody(req)
     if (body.requireApiKey !== undefined) app.keys.requireApiKey = bool(body.requireApiKey)
     if (body.opencodeSync !== undefined) app.settings.setOpencodeSync(bool(body.opencodeSync))
-    if (body.opencodeSyncMode !== undefined) app.settings.setOpencodeSyncMode(str(body.opencodeSyncMode))
     if (body.port !== undefined) {
       const port = Number(body.port)
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
@@ -171,6 +170,29 @@ export async function handleAdmin(deps: AdminDeps, req: IncomingMessage, res: Se
   // POST /api/opencode/sync —— 立即写一次 provider 配置
   if (method === 'POST' && path === '/api/opencode/sync') {
     writeJson(res, 200, { ok: true, opencode: app.syncOpencode(true) })
+    return
+  }
+
+  // GET /api/tps —— TPS 仪表盘快照
+  if (method === 'GET' && path === '/api/tps') {
+    writeJson(res, 200, app.tps.snapshot())
+    return
+  }
+
+  // POST /api/tps/watch  { origin, sessionId, title }
+  if (method === 'POST' && path === '/api/tps/watch') {
+    const body = await readBody(req)
+    const origin = str(body.origin).trim()
+    const sessionId = str(body.sessionId).trim() || null
+    try {
+      const url = new URL(origin)
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('bad protocol')
+    } catch {
+      writeJson(res, 400, { error: 'origin 不是合法的 http(s) 地址' })
+      return
+    }
+    app.tps.watchSession({ origin, sessionId, title: str(body.title).trim() || null })
+    writeJson(res, 200, { ok: true, tps: app.tps.snapshot() })
     return
   }
 

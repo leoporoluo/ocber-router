@@ -14,6 +14,7 @@ import { AccountPool } from './account-pool.ts'
 import { CredentialStore, SupplierConfigStore, CombosStore, KeysStore, SettingsStore, DEFAULT_PORT } from './store.ts'
 import { UsageStore } from './usage.ts'
 import { syncOpencode } from './opencode-sync.ts'
+import { TpsTracker } from './tps.ts'
 import type {
   AccountView,
   CheckinResult,
@@ -28,7 +29,7 @@ import type {
   SupplierView,
 } from '../shared/types.ts'
 
-export const VERSION = '0.1.5'
+export const VERSION = '0.1.6'
 
 export interface SupplierRuntime {
   module: SupplierModule
@@ -51,6 +52,8 @@ export class App {
   readonly keys: KeysStore
   readonly settings: SettingsStore
   readonly usage: UsageStore
+  /** TPS 仪表盘：订阅 OpenChamber 全局事件流算生成速率。 */
+  readonly tps = new TpsTracker()
   readonly runtimes: SupplierRuntime[]
   readonly startedAt = Date.now()
 
@@ -426,7 +429,6 @@ export class App {
       requireApiKey: this.keys.requireApiKey,
       port: this.settings.get().port || this.endpointPort || DEFAULT_PORT,
       opencodeSync: this.settings.get().opencodeSync,
-      opencodeSyncMode: this.settings.get().opencodeSyncMode,
     }
   }
 
@@ -448,6 +450,7 @@ export class App {
   }
 
   dispose(): void {
+    this.tps.dispose()
     for (const r of this.runtimes) {
       try {
         r.module.dispose()
