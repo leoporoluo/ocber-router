@@ -325,6 +325,8 @@ let tabsRoot: HTMLElement
 let viewRoot: HTMLElement
 let banner: ReturnType<typeof mountBanner> | null = null
 let tabs: ReturnType<typeof mountTabs> | null = null
+/** 头部刷新按钮：建一次，只 update（重建会让按钮位置抖动）。 */
+let refreshBtn: ReturnType<typeof mountButton> | null = null
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag)
@@ -445,8 +447,7 @@ async function loadDetail(id: string): Promise<void> {
 
 async function reload(): Promise<void> {
   if (refreshing) return
-  refreshing = true
-  renderHead()
+  setRefreshing(true)
   try {
     await refreshState()
     if (tab === 'overview') await loadStats()
@@ -454,9 +455,8 @@ async function reload(): Promise<void> {
   } catch (error) {
     notify(describeError(error), 'error')
   } finally {
-    refreshing = false
+    setRefreshing(false)
   }
-  renderHead()
   renderTabs()
   renderBody()
 }
@@ -1473,15 +1473,26 @@ function renderTabs(): void {
   })
 }
 
-function renderHead(): void {
+/**
+ * 头部只建一次：刷新按钮的「加载中」靠 update 而不是重建节点。
+ *
+ * 之前每次 reload（手动/任务/15s 自动刷新）都会 clear + 重建按钮，
+ * 按钮被移除再插回、宽度随 spinner 变化、右对齐位置跟着跳——看起来就是抖动。
+ */
+function mountHead(): void {
   clear(headRoot)
   const left = el('div', 'oc-grow')
   left.append(el('h1', 'oc-title', copy.title))
   const right = el('div', 'oc-actions')
   const refreshWrap = el('span')
-  mountButton(refreshWrap, { label: copy.refresh, variant: 'outline', size: 'sm', loading: refreshing, onClick: () => void reload() })
+  refreshBtn = mountButton(refreshWrap, { label: copy.refresh, variant: 'outline', size: 'sm', onClick: () => void reload() })
   right.append(refreshWrap)
   headRoot.append(left, right)
+}
+
+function setRefreshing(value: boolean): void {
+  refreshing = value
+  refreshBtn?.update({ loading: value })
 }
 
 function renderBody(): void {
@@ -1504,7 +1515,7 @@ function mount(): void {
   viewRoot = el('div', 'oc-view')
   container.append(noticeRoot, headRoot, tabsRoot, viewRoot)
   rootNode!.append(container)
-  renderHead()
+  mountHead()
   viewRoot.append(card([mountSpinnerInline(copy.loading)]))
 
   void reload().then(() => {
@@ -1520,9 +1531,8 @@ function mount(): void {
             if (tab === 'overview' || (tab === 'suppliers' && detailId === null)) {
               await reload()
             } else {
-              // 详情页 / 表单页只静默刷新头部与页签计数，避免把正在输入的内容重画掉
+              // 详情页 / 表单页只静默刷新页签计数，避免把正在输入的内容重画掉
               await refreshState()
-              renderHead()
               renderTabs()
             }
           } catch {

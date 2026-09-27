@@ -29,7 +29,7 @@ import type {
   SupplierView,
 } from '../shared/types.ts'
 
-export const VERSION = '0.1.11'
+export const VERSION = '0.1.12'
 
 export interface SupplierRuntime {
   module: SupplierModule
