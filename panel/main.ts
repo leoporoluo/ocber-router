@@ -14,7 +14,7 @@ import {
   mountBanner,
   mountBadge,
   mountButton,
-  mountSelect,
+  mountSearchField,
   mountSpinner,
   mountSwitch,
   mountTabs,
@@ -101,9 +101,14 @@ const COPY = {
     clearStats: '清空统计',
     combosTitle: '组合（fallback 链）',
     comboName: '组合名',
-    comboTargets: '目标（逗号分隔，形如 codebuddy/glm-5.3）',
+    comboTargets: '模型（按顺序回退）',
     comboSave: '保存组合',
-    comboHint: '目标按顺序回退；写 `codebuddy/glm-5.3` 精确指定供应商，或直接写不带前缀的模型名（唯一命中时自动归属）。改完点「保存组合」。',
+    comboHint: '从「添加模型」里挑（优先用启用的模型，写成 别名/模型 全名）；按顺序回退，第一个失败用第二个。',
+    comboSelected: '已选模型',
+    comboPick: '添加模型',
+    comboPickSearch: '搜索模型…',
+    comboPickEmpty: '没有可选模型：先在「供应商」里添加账号、拉取并启用模型。',
+    comboEmptySelection: '还没选模型，从下面挑。',
     noCombos: '还没有组合。',
     invalidTarget: '无效目标',
     jobLogin: '登录',
@@ -220,9 +225,14 @@ const COPY = {
     clearStats: 'Clear stats',
     combosTitle: 'Combos (fallback chain)',
     comboName: 'Combo name',
-    comboTargets: 'Targets (comma separated, e.g. codebuddy/glm-5.3)',
+    comboTargets: 'Models (fail over in order)',
     comboSave: 'Save combo',
-    comboHint: 'A combo shows up in /v1/models and can be used as a model name; targets fail over in order.',
+    comboHint: 'Pick from “Add model” (enabled models, written as alias/model). Targets fail over in order.',
+    comboSelected: 'Selected models',
+    comboPick: 'Add model',
+    comboPickSearch: 'Search models…',
+    comboPickEmpty: 'No model available: add an account and enable models under Suppliers first.',
+    comboEmptySelection: 'Nothing selected yet — pick from the list below.',
     noCombos: 'No combo yet.',
     invalidTarget: 'invalid target',
     jobLogin: 'Login',
@@ -1135,7 +1145,9 @@ function mountSpinnerInline(label: string): HTMLElement {
 // ---------------------------------------------------------------------------
 
 /** 组合表单草稿（模块级：自动刷新/重画不丢正在输入的内容）。 */
-let comboDraft: { name: string; targets: string; editing: string | null } = { name: '', targets: '', editing: null }
+let comboDraft: { name: string; targets: string[]; editing: string | null } = { name: '', targets: [], editing: null }
+/** 组合「添加模型」的搜索词（重画时保留）。 */
+let comboSearch = ''
 
 function renderCombos(): HTMLElement {
   const wrap = el('div')
@@ -1149,6 +1161,14 @@ function renderCombos(): HTMLElement {
   for (const combo of combos) listNodes.push(renderComboItem(combo))
   wrap.append(cardWithTitle(copy.combosTitle, null, listNodes))
 
+  // 「可添加的模型」：当前启用中的模型（没账号的供应商已经被 app 侧过滤掉）
+  const available: Array<{ id: string; group: string }> = []
+  for (const supplier of state?.suppliers ?? []) {
+    if (!supplier.enabled) continue
+    for (const model of supplier.models) available.push({ id: `${supplier.alias}/${model}`, group: `${supplier.name} · ${supplier.alias}` })
+  }
+  const availableIds = new Set(available.map((m) => m.id))
+
   const nameWrap = el('div')
   const nameField = mountTextField(nameWrap, {
     value: comboDraft.name,
@@ -1159,19 +1179,77 @@ function renderCombos(): HTMLElement {
       nameField.update({ value })
     },
   })
-  const targetsWrap = el('div')
-  const targetsField = mountTextField(targetsWrap, {
-    value: comboDraft.targets,
-    label: copy.comboTargets,
-    helper: copy.comboHint,
-    multiline: true,
-    rows: 3,
-    mono: true,
+
+  // 已选模型：编号 + 移除（按顺序回退）
+  const selectedNodes: HTMLElement[] = []
+  selectedNodes.push(el('div', 'oc-item-sub', `${copy.comboSelected}（${comboDraft.targets.length}）`))
+  if (comboDraft.targets.length === 0) {
+    selectedNodes.push(el('div', 'oc-item-sub', copy.comboEmptySelection))
+  } else {
+    comboDraft.targets.forEach((target, index) => {
+      const row = el('div', 'oc-item-main')
+      const info = el('div', 'oc-grow')
+      info.append(el('div', 'oc-item-title', `${index + 1}. ${target}`))
+      if (!availableIds.has(target)) info.append(el('div', 'oc-item-sub', copy.invalidTarget))
+      const removeWrap = el('span')
+      mountButton(removeWrap, {
+        label: copy.delete,
+        variant: 'ghost',
+        size: 'xs',
+        onClick: () => {
+          comboDraft.targets = comboDraft.targets.filter((t) => t !== target)
+          renderBody()
+        },
+      })
+      row.append(info, removeWrap)
+      selectedNodes.push(row)
+    })
+  }
+  selectedNodes.push(el('div', 'oc-item-sub', copy.comboHint))
+
+  // 「添加模型」：搜索 + 按供应商分组，点「添加」进入已选
+  const pickWrap = el('div')
+  const searchWrap = el('div')
+  mountSearchField(searchWrap, {
+    value: comboSearch,
+    placeholder: copy.comboPickSearch,
     onChange: (value) => {
-      comboDraft.targets = value
-      targetsField.update({ value })
+      comboSearch = value
+      renderPicker()
     },
   })
+  const listWrap = el('div', 'oc-scroll')
+  const renderPicker = (): void => {
+    clear(listWrap)
+    const query = comboSearch.trim().toLowerCase()
+    const candidates = available.filter((m) => !comboDraft.targets.includes(m.id) && (query === '' || m.id.toLowerCase().includes(query)))
+    if (candidates.length === 0) {
+      listWrap.append(el('div', 'oc-item-sub', available.length === 0 ? copy.comboPickEmpty : copy.noData))
+      return
+    }
+    let currentGroup = ''
+    for (const model of candidates) {
+      if (model.group !== currentGroup) {
+        currentGroup = model.group
+        listWrap.append(el('div', 'oc-item-sub', currentGroup))
+      }
+      const row = el('div', 'oc-item-main')
+      row.append(el('div', 'oc-item-title oc-grow', model.id))
+      const addWrap = el('span')
+      mountButton(addWrap, {
+        label: copy.add,
+        variant: 'outline',
+        size: 'xs',
+        onClick: () => {
+          comboDraft.targets = [...comboDraft.targets, model.id]
+          renderBody()
+        },
+      })
+      row.append(addWrap)
+      listWrap.append(row)
+    }
+  }
+  renderPicker()
 
   const actions = el('div', 'oc-actions')
   const saveWrap = el('span')
@@ -1179,20 +1257,18 @@ function renderCombos(): HTMLElement {
     label: copy.comboSave,
     variant: 'default',
     size: 'sm',
+    disabled: comboDraft.targets.length === 0,
     onClick: () => {
       const name = comboDraft.name.trim()
-      if (name === '') return
-      const targets = comboDraft.targets
-        .split(/[,，\n]/)
-        .map((t) => t.trim())
-        .filter((t) => t !== '')
-      void api<{ combo?: ComboResolved }>('POST', '/api/combos/set', { name, targets })
+      if (name === '' || comboDraft.targets.length === 0) return
+      void api<{ combo?: ComboResolved }>('POST', '/api/combos/set', { name, targets: comboDraft.targets })
         .then((result) => {
           const invalid = (result.combo?.targets ?? []).filter((t) => !t.ok)
           if (invalid.length > 0) {
-            notify(`目标无法解析：${invalid.map((t) => t.raw).join('、')}（可写 codebuddy/<模型名>，或检查拼写）`, 'warning')
+            notify(`目标无法解析：${invalid.map((t) => t.raw).join('、')}（检查拼写或从列表里挑）`, 'warning')
           }
-          comboDraft = { name: '', targets: '', editing: null }
+          comboDraft = { name: '', targets: [], editing: null }
+          comboSearch = ''
           return reload()
         })
         .catch((error) => notify(describeError(error), 'error'))
@@ -1206,15 +1282,18 @@ function renderCombos(): HTMLElement {
       variant: 'ghost',
       size: 'sm',
       onClick: () => {
-        comboDraft = { name: '', targets: '', editing: null }
+        comboDraft = { name: '', targets: [], editing: null }
+        comboSearch = ''
         renderBody()
       },
     })
     actions.append(cancelWrap)
   }
 
-  const formChildren: HTMLElement[] = [nameWrap, targetsWrap]
-  if (comboDraft.editing !== null) formChildren.unshift(el('div', 'oc-item-sub', `${copy.editingCombo}：${comboDraft.editing}`))
+  const formChildren: HTMLElement[] = []
+  if (comboDraft.editing !== null) formChildren.push(el('div', 'oc-item-sub', `${copy.editingCombo}：${comboDraft.editing}`))
+  formChildren.push(nameWrap, ...selectedNodes)
+  formChildren.push(cardWithTitle(copy.comboPick, null, [searchWrap, listWrap]))
   formChildren.push(actions)
   wrap.append(card(formChildren))
   return wrap
@@ -1233,7 +1312,8 @@ function renderComboItem(combo: ComboResolved): HTMLElement {
     variant: 'outline',
     size: 'xs',
     onClick: () => {
-      comboDraft = { name: combo.name, targets: combo.targets.map((t) => t.raw).join(', '), editing: combo.name }
+      comboDraft = { name: combo.name, targets: combo.targets.map((t) => t.raw), editing: combo.name }
+      comboSearch = ''
       renderBody()
     },
   })
@@ -1245,7 +1325,7 @@ function renderComboItem(combo: ComboResolved): HTMLElement {
     onClick: () => {
       void api('POST', '/api/combos/remove', { name: combo.name })
         .then(() => {
-          if (comboDraft.editing === combo.name) comboDraft = { name: '', targets: '', editing: null }
+          if (comboDraft.editing === combo.name) comboDraft = { name: '', targets: [], editing: null }
           return reload()
         })
         .catch((error) => notify(describeError(error), 'error'))
