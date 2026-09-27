@@ -5,7 +5,7 @@
  *      宿主代理访问，每个请求必须带 `Authorization: Bearer <SERVICE_TOKEN>`。
  *      路由：GET /health、/api/*。
  *
- *   2) 对外端口（settings.port，默认 3080，冲突自动顺延）—— OpenAI 兼容端点，
+ *   2) 对外端口（settings.port，默认 20128，冲突自动顺延）—— OpenAI 兼容端点，
  *      给 Claude Code / Cline / OpenCode 之类的外部客户端用。鉴权由
  *      `requireApiKey` + 库内 key 决定（默认关，与 9router 一致）。
  *
@@ -17,6 +17,7 @@ import type { AddressInfo } from 'node:net'
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib'
 
 import { App } from './app.ts'
+import { DEFAULT_PORT } from './store.ts'
 import { handleAdmin } from './admin.ts'
 import { handleChat, writeJson } from './chat.ts'
 
@@ -157,7 +158,7 @@ export async function startServer(app: App, serviceToken: string, adminPort: num
 
   // ---- 对外端口（OpenAI 兼容） ----
   publicServer = http.createServer(publicServerHandler)
-  const publicPort = await listenPublic(publicServer, app.settings.get().port || 3080)
+  const publicPort = await listenPublic(publicServer, app.settings.get().port || DEFAULT_PORT)
   app.endpointPort = publicPort
 
   function publicServerHandler(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -201,7 +202,7 @@ export async function startServer(app: App, serviceToken: string, adminPort: num
 
 /** 端口占用时顺延尝试，最终回落到系统临时端口。 */
 async function listenPublic(server: http.Server, preferred: number): Promise<number> {
-  const base = Number.isInteger(preferred) && preferred > 0 ? preferred : 3080
+  const base = Number.isInteger(preferred) && preferred > 0 ? preferred : DEFAULT_PORT
   for (let i = 0; i < PORT_FALLBACK_TRIES; i += 1) {
     const candidate = base + i
     if (candidate >= 65536) break

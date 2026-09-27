@@ -121,7 +121,7 @@ const COPY = {
     upstream: '上游',
     fallback: '内置兜底',
     sourceLabel: '模型来源',
-    portHint: '默认 3080，被占用会自动顺延；修改后立即生效。',
+    portHint: '对外端点的监听端口；被占用时自动顺延到下一个可用端口，修改后立即生效。',
     badPort: '端口非法',
     accountCount: '账号',
     failed: '失败',
@@ -237,7 +237,7 @@ const COPY = {
     upstream: 'upstream',
     fallback: 'built-in fallback',
     sourceLabel: 'Model source',
-    portHint: 'Default 3080; taken ports fall forward. Applies immediately.',
+    portHint: 'Port of the external endpoint; a taken port falls forward to the next free one. Applies immediately.',
     badPort: 'Invalid port',
     accountCount: 'accounts',
     failed: 'failed',
@@ -1303,7 +1303,7 @@ function renderEndpoint(): HTMLElement {
   })
   endpointRow.append(endpointText, copyWrap)
 
-  let portDraft = String(state?.settings.port ?? 3080)
+  let portDraft = String(state?.settings.port ?? 20128)
   const portRow = el('div', 'oc-flex')
   const portWrap = el('div', 'oc-grow')
   const portField = mountTextField(portWrap, {

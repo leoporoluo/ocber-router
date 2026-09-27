@@ -7,7 +7,7 @@ OpenChamber 扩展：把 [dsh-router](https://github.com/CARVIN94/dsh-router) �
 装好之后，OpenChamber 里多一个侧栏面板，同时本机多一个 OpenAI 兼容端点：
 
 ```
-http://127.0.0.1:3080/v1
+http://127.0.0.1:20128/v1
 ```
 
 任何支持 OpenAI 兼容 API 的客户端（Claude Code、Cline、OpenCode 自定义 provider 等）
@@ -55,12 +55,12 @@ npm run build        # 产出 panel/main.js 与 service/main.js
    面板打开即触发。之后服务常驻，直到 OpenChamber 退出。
 2. 面板 → **供应商** → `CodeBuddy` / `CodeBuddyEN` → **添加链接** → 浏览器登录。
 3. **获取模型** → 逐个启用需要的模型（默认全开）。
-4. 在 **端点与密钥** 复制端点（默认 `http://127.0.0.1:3080/v1`），配置你的客户端：
+4. 在 **端点与密钥** 复制端点（默认 `http://127.0.0.1:20128/v1`），配置你的客户端：
 
 ```bash
-curl http://127.0.0.1:3080/v1/models
+curl http://127.0.0.1:20128/v1/models
 
-curl -X POST http://127.0.0.1:3080/v1/chat/completions \
+curl -X POST http://127.0.0.1:20128/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"codebuddy/glm-5.3","messages":[{"role":"user","content":"你好"}],"stream":false}'
 ```
@@ -84,7 +84,7 @@ curl -X POST http://127.0.0.1:3080/v1/chat/completions \
     "ocber": {
       "name": "OCBer Router",
       "package": "aisdk:@ai-sdk/openai-compatible",
-      "settings": { "baseURL": "http://127.0.0.1:3080/v1" },
+      "settings": { "baseURL": "http://127.0.0.1:20128/v1" },
       "models": {
         "codebuddy/glm-5.3": { "modelID": "codebuddy/glm-5.3", "name": "codebuddy/glm-5.3" }
       }
@@ -121,7 +121,7 @@ curl -X POST http://127.0.0.1:3080/v1/chat/completions \
   多张图片（base64），旧版 8MB 上限会把这类请求误判成「请求体不是合法 JSON」。
 - **没账号的供应商不参与路由/列表/同步**：它的模型一律视为停用（面板里开关置灰），
   添加账号后自动恢复。
-- **对外端口默认 3080**，被占用会自动顺延（面板显示实际端口），可在面板改。
+- **对外端口默认 20128**，被占用会自动顺延（面板显示实际端口），可在面板改。
   只监听 `127.0.0.1`。
 - 面板是沙箱 iframe，不直连外网；所有上游请求、凭证都在本地服务进程里。
 

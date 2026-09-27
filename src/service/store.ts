@@ -396,7 +396,7 @@ export interface ServiceSettings {
   opencodeSyncedAt: number
 }
 
-export const DEFAULT_PORT = 3080
+export const DEFAULT_PORT = 20128
 
 export class SettingsStore {
   private file: string

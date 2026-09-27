@@ -2,12 +2,344 @@
 import http from "node:http";
 import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 
-// src/service/chat.ts
-import { randomBytes } from "node:crypto";
-
-// src/service/usage.ts
+// src/service/store.ts
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { randomBytes } from "node:crypto";
+function resolveDataDir() {
+  const override = (process.env.OCBER_DATA_DIR ?? "").trim();
+  if (override !== "")
+    return override;
+  return join(homedir(), ".ocber-router");
+}
+function writeJson(file, value) {
+  try {
+    const dir = dirname(file);
+    if (dir !== "" && dir !== ".")
+      mkdirSync(dir, { recursive: true });
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 384 });
+    renameSync(tmp, file);
+  } catch {}
+}
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return;
+  }
+}
+
+class CredentialStore {
+  file;
+  data = {};
+  constructor(dataDir) {
+    this.file = join(dataDir, "credentials.json");
+    const raw = readJson(this.file);
+    if (raw !== undefined && typeof raw === "object" && raw !== null)
+      this.data = raw;
+  }
+  list(supplierId) {
+    const bucket = this.data[supplierId];
+    return bucket === undefined ? [] : Object.keys(bucket);
+  }
+  get(supplierId, uid) {
+    return this.data[supplierId]?.[uid];
+  }
+  save(supplierId, uid, blob) {
+    const bucket = this.data[supplierId] ?? {};
+    bucket[uid] = blob;
+    this.data[supplierId] = bucket;
+    writeJson(this.file, this.data);
+  }
+  remove(supplierId, uid) {
+    const bucket = this.data[supplierId];
+    if (bucket === undefined || bucket[uid] === undefined)
+      return;
+    delete bucket[uid];
+    writeJson(this.file, this.data);
+  }
+}
+var DEFAULT_SUPPLIER_CONFIG = () => ({
+  enabled: true,
+  alias: "",
+  disabled: [],
+  custom: [],
+  poolOrder: [],
+  poolStrategy: "fallback",
+  credits: {}
+});
+
+class SupplierConfigStore {
+  file;
+  bySupplier = new Map;
+  constructor(dataDir) {
+    this.file = join(dataDir, "supplier-config.json");
+    const raw = readJson(this.file);
+    for (const [id, cfg] of Object.entries(raw?.suppliers ?? {})) {
+      this.bySupplier.set(id, {
+        enabled: typeof cfg.enabled === "boolean" ? cfg.enabled : true,
+        alias: typeof cfg.alias === "string" ? cfg.alias : "",
+        disabled: Array.isArray(cfg.disabled) ? cfg.disabled.filter((m) => typeof m === "string") : [],
+        custom: Array.isArray(cfg.custom) ? cfg.custom.filter((m) => typeof m === "string") : [],
+        poolOrder: Array.isArray(cfg.poolOrder) ? cfg.poolOrder.filter((u) => typeof u === "string") : [],
+        poolStrategy: cfg.poolStrategy === "round-robin" ? "round-robin" : "fallback",
+        credits: readCredits(cfg.credits)
+      });
+    }
+  }
+  get(id) {
+    let cfg = this.bySupplier.get(id);
+    if (cfg === undefined) {
+      cfg = DEFAULT_SUPPLIER_CONFIG();
+      this.bySupplier.set(id, cfg);
+    }
+    return cfg;
+  }
+  setAlias(id, alias) {
+    this.get(id).alias = (alias ?? "").trim();
+    this.save();
+  }
+  setEnabled(id, enabled) {
+    this.get(id).enabled = enabled;
+    this.save();
+  }
+  setPoolOrder(id, uids) {
+    this.get(id).poolOrder = [...new Set(uids)];
+    this.save();
+  }
+  setPoolStrategy(id, strategy) {
+    this.get(id).poolStrategy = strategy === "round-robin" ? "round-robin" : "fallback";
+    this.save();
+  }
+  setModelEnabled(id, modelId, enabled) {
+    const cfg = this.get(id);
+    cfg.disabled = enabled ? cfg.disabled.filter((m) => m !== modelId) : [...new Set([...cfg.disabled, modelId])];
+    this.save();
+  }
+  setAllModelsEnabled(id, enabled, modelIds) {
+    const cfg = this.get(id);
+    cfg.disabled = enabled ? [] : [...new Set(modelIds)];
+    this.save();
+  }
+  addCustomModel(id, modelId) {
+    const cfg = this.get(id);
+    const clean = modelId.trim();
+    if (clean === "" || cfg.custom.includes(clean))
+      return;
+    cfg.custom.push(clean);
+    this.save();
+  }
+  removeCustomModel(id, modelId) {
+    const cfg = this.get(id);
+    cfg.custom = cfg.custom.filter((m) => m !== modelId);
+    cfg.disabled = cfg.disabled.filter((m) => m !== modelId);
+    this.save();
+  }
+  getCredits(id, uid) {
+    const v = this.get(id).credits[uid];
+    return typeof v === "number" && Number.isFinite(v) ? v : -1;
+  }
+  putCredits(id, uid, reported) {
+    if (typeof reported !== "number" || !Number.isFinite(reported) || reported < 0)
+      return this.getCredits(id, uid);
+    const prev = this.getCredits(id, uid);
+    if (prev === reported)
+      return reported;
+    this.get(id).credits[uid] = reported;
+    this.save();
+    return reported;
+  }
+  clearCredits(id, uid) {
+    const credits = this.get(id).credits;
+    if (credits[uid] === undefined)
+      return;
+    delete credits[uid];
+    this.save();
+  }
+  knownIds() {
+    return [...this.bySupplier.keys()];
+  }
+  save() {
+    const file = { suppliers: {} };
+    for (const [id, cfg] of this.bySupplier)
+      file.suppliers[id] = { ...cfg, credits: { ...cfg.credits } };
+    writeJson(this.file, file);
+  }
+}
+function readCredits(raw) {
+  const out = {};
+  if (typeof raw !== "object" || raw === null)
+    return out;
+  for (const [uid, v] of Object.entries(raw)) {
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0)
+      out[uid] = v;
+  }
+  return out;
+}
+
+class CombosStore {
+  file;
+  combos = new Map;
+  constructor(dataDir) {
+    this.file = join(dataDir, "combos.json");
+    const raw = readJson(this.file);
+    for (const [name, targets] of Object.entries(raw?.combos ?? {})) {
+      if (!Array.isArray(targets))
+        continue;
+      this.combos.set(name, targets.filter((t) => typeof t === "string"));
+    }
+  }
+  list() {
+    return [...this.combos.entries()].map(([name, targets]) => ({ name, targets: [...targets] }));
+  }
+  get(name) {
+    return this.combos.get(name);
+  }
+  set(name, targets) {
+    const clean = name.trim();
+    if (clean === "")
+      return;
+    this.combos.set(clean, [...new Set(targets.map((t) => t.trim()).filter((t) => t !== ""))]);
+    this.save();
+  }
+  remove(name) {
+    const ok = this.combos.delete(name);
+    if (ok)
+      this.save();
+    return ok;
+  }
+  save() {
+    writeJson(this.file, { combos: Object.fromEntries(this.combos) });
+  }
+}
+
+class KeysStore {
+  file;
+  keys = [];
+  require = false;
+  constructor(dataDir) {
+    this.file = join(dataDir, "keys.json");
+    const raw = readJson(this.file);
+    if (raw !== undefined) {
+      this.keys = Array.isArray(raw.keys) ? raw.keys : [];
+      this.require = !!raw.requireApiKey;
+    }
+  }
+  list() {
+    return this.keys.map((k) => ({ ...k, masked: maskKey(k.key) }));
+  }
+  create(name) {
+    const entry = {
+      id: randomBytes(6).toString("hex"),
+      name: name.trim() !== "" ? name.trim() : `Key ${this.keys.length + 1}`,
+      key: `ocber-${randomBytes(24).toString("hex")}`,
+      isActive: true,
+      createdAt: new Date().toISOString()
+    };
+    this.keys.push(entry);
+    this.save();
+    return entry;
+  }
+  remove(id) {
+    const before = this.keys.length;
+    this.keys = this.keys.filter((k) => k.id !== id);
+    if (this.keys.length === before)
+      return false;
+    this.save();
+    return true;
+  }
+  setActive(id, isActive) {
+    const k = this.keys.find((k2) => k2.id === id);
+    if (k === undefined)
+      return false;
+    k.isActive = isActive;
+    this.save();
+    return true;
+  }
+  get requireApiKey() {
+    return this.require;
+  }
+  set requireApiKey(v) {
+    this.require = v;
+    this.save();
+  }
+  verify(bearer) {
+    if (!this.require)
+      return true;
+    if (bearer === undefined || bearer === "")
+      return false;
+    return this.keys.some((k) => k.isActive && k.key === bearer);
+  }
+  firstActiveKey() {
+    return this.keys.find((k) => k.isActive)?.key;
+  }
+  save() {
+    writeJson(this.file, { keys: this.keys, requireApiKey: this.require });
+  }
+}
+function maskKey(k) {
+  if (k.length <= 10)
+    return k;
+  return `${k.slice(0, 6)}${"•".repeat(Math.min(k.length - 10, 12))}${k.slice(-4)}`;
+}
+var DEFAULT_PORT = 20128;
+
+class SettingsStore {
+  file;
+  port;
+  opencodeSync;
+  opencodeSignature;
+  opencodeSyncedAt;
+  constructor(dataDir) {
+    this.file = join(dataDir, "settings.json");
+    const raw = readJson(this.file);
+    const p = Number(raw?.port);
+    this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
+    this.opencodeSync = typeof raw?.opencodeSync === "boolean" ? raw.opencodeSync : true;
+    this.opencodeSignature = typeof raw?.opencodeSignature === "string" ? raw.opencodeSignature : "";
+    this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === "number" ? raw.opencodeSyncedAt : 0;
+  }
+  get() {
+    return {
+      port: this.port,
+      opencodeSync: this.opencodeSync,
+      opencodeSignature: this.opencodeSignature,
+      opencodeSyncedAt: this.opencodeSyncedAt
+    };
+  }
+  setPort(port) {
+    if (!Number.isInteger(port) || port <= 0 || port >= 65536)
+      return;
+    this.port = port;
+    this.save();
+  }
+  setOpencodeSync(enabled) {
+    this.opencodeSync = enabled;
+    this.save();
+  }
+  setOpencodeSyncState(signature, syncedAt) {
+    this.opencodeSignature = signature;
+    this.opencodeSyncedAt = syncedAt;
+    this.save();
+  }
+  save() {
+    writeJson(this.file, {
+      port: this.port,
+      opencodeSync: this.opencodeSync,
+      opencodeSignature: this.opencodeSignature,
+      opencodeSyncedAt: this.opencodeSyncedAt
+    });
+  }
+}
+
+// src/service/chat.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
+
+// src/service/usage.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2, join as join2 } from "node:path";
 var EMPTY_USAGE = {
   promptTokens: 0,
   completionTokens: 0,
@@ -61,7 +393,7 @@ class UsageStore {
   lifetime = 0;
   timer = null;
   constructor(dataDir) {
-    this.file = join(dataDir, "usage.json");
+    this.file = join2(dataDir, "usage.json");
     this.load();
   }
   record(r, usage) {
@@ -265,7 +597,7 @@ class UsageStore {
   }
   load() {
     try {
-      const f = JSON.parse(readFileSync(this.file, "utf8"));
+      const f = JSON.parse(readFileSync2(this.file, "utf8"));
       this.days = new Map(Object.entries(f.days ?? {}));
       this.recent = Array.isArray(f.recent) ? f.recent.slice(0, RING_CAP) : [];
       this.lifetime = typeof f.lifetime === "number" ? f.lifetime : 0;
@@ -282,14 +614,14 @@ class UsageStore {
       if (k < cutoff)
         this.days.delete(k);
     try {
-      const dir = dirname(this.file);
+      const dir = dirname2(this.file);
       if (dir !== "" && dir !== ".")
-        mkdirSync(dir, { recursive: true });
+        mkdirSync2(dir, { recursive: true });
       const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ days: Object.fromEntries(this.days), recent: this.recent, lifetime: this.lifetime }), {
+      writeFileSync2(tmp, JSON.stringify({ days: Object.fromEntries(this.days), recent: this.recent, lifetime: this.lifetime }), {
         mode: 384
       });
-      renameSync(tmp, this.file);
+      renameSync2(tmp, this.file);
     } catch {}
   }
 }
@@ -327,7 +659,7 @@ function top(map) {
 }
 
 // src/service/chat.ts
-function writeJson(res, status, value) {
+function writeJson2(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
@@ -444,7 +776,7 @@ class ChatAccumulator {
     if (this.toolCalls.size > 0) {
       msg.tool_calls = [...this.toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([index, tc]) => ({
         index,
-        id: tc.id ?? `call_${randomBytes(6).toString("hex")}`,
+        id: tc.id ?? `call_${randomBytes2(6).toString("hex")}`,
         type: tc.type ?? "function",
         function: { name: tc.name ?? "", arguments: tc.arguments }
       }));
@@ -582,12 +914,12 @@ function absorbLine(line, acc) {
 async function handleChat(app, res, body) {
   const requested = typeof body.model === "string" ? body.model : "";
   if (requested === "") {
-    writeJson(res, 400, errorBody("缺少 model 字段", "invalid_request_error"));
+    writeJson2(res, 400, errorBody("缺少 model 字段", "invalid_request_error"));
     return;
   }
   const targets = app.resolveTargets(requested);
   if (targets.length === 0) {
-    writeJson(res, 404, errorBody(`未知模型：${requested}`, "model_not_found"));
+    writeJson2(res, 404, errorBody(`未知模型：${requested}`, "model_not_found"));
     return;
   }
   const stream = body.stream === true;
@@ -652,8 +984,8 @@ async function handleChat(app, res, body) {
           ttfbMs: 0,
           uid
         }, acc.usage);
-        writeJson(res, 200, {
-          id: `chatcmpl-${randomBytes(8).toString("hex")}`,
+        writeJson2(res, 200, {
+          id: `chatcmpl-${randomBytes2(8).toString("hex")}`,
           object: "chat.completion",
           created: Math.floor(Date.now() / 1000),
           model: requested,
@@ -669,9 +1001,9 @@ async function handleChat(app, res, body) {
       }
       if (result.ok && "body" in result) {
         try {
-          writeJson(res, result.status, JSON.parse(result.body));
+          writeJson2(res, result.status, JSON.parse(result.body));
         } catch {
-          writeJson(res, result.status, { raw: result.body });
+          writeJson2(res, result.status, { raw: result.body });
         }
         runtime.pool.noteSuccess(uid, target.model);
         return;
@@ -686,7 +1018,7 @@ async function handleChat(app, res, body) {
     }
   }
   app.usage.record({ supplier: targets[0]?.supplierId ?? "", model: "", requested, ok: false, durationMs: 0, ttfbMs: 0, error: lastMessage }, { ...EMPTY_USAGE });
-  writeJson(res, 503, errorBody(`全部候选失败：${lastMessage}`, lastState === "session_dead" ? "auth_error" : "upstream_error"));
+  writeJson2(res, 503, errorBody(`全部候选失败：${lastMessage}`, lastState === "session_dead" ? "auth_error" : "upstream_error"));
 }
 
 // src/service/admin.ts
@@ -722,22 +1054,22 @@ async function handleAdmin(deps, req, res, url) {
   const path = url.pathname;
   const method = req.method ?? "GET";
   if (method === "GET" && path === "/api/state") {
-    writeJson(res, 200, app.state());
+    writeJson2(res, 200, app.state());
     return;
   }
   if (method === "GET" && path === "/api/stats") {
     const period = readPeriod(url);
-    writeJson(res, 200, { period, stats: app.usage.stats(period), recent: app.usage.recentList(20) });
+    writeJson2(res, 200, { period, stats: app.usage.stats(period), recent: app.usage.recentList(20) });
     return;
   }
   if (method === "GET" && path === "/api/stats/chart") {
     const period = readPeriod(url);
-    writeJson(res, 200, { period, buckets: app.usage.chart(period) });
+    writeJson2(res, 200, { period, buckets: app.usage.chart(period) });
     return;
   }
   if (method === "POST" && path === "/api/stats/clear") {
     app.usage.clear();
-    writeJson(res, 200, { ok: true });
+    writeJson2(res, 200, { ok: true });
     return;
   }
   if (method === "POST" && path === "/api/jobs") {
@@ -745,55 +1077,55 @@ async function handleAdmin(deps, req, res, url) {
     const type = str(body.type);
     const supplierId = str(body.supplierId);
     if (!["login", "checkin", "models"].includes(type) || app.runtimeById(supplierId) === undefined) {
-      writeJson(res, 400, { error: "非法任务参数" });
+      writeJson2(res, 400, { error: "非法任务参数" });
       return;
     }
-    writeJson(res, 200, app.startJob(type, supplierId));
+    writeJson2(res, 200, app.startJob(type, supplierId));
     return;
   }
   const jobMatch = /^\/api\/jobs\/([0-9a-f]+)$/.exec(path);
   if (method === "GET" && jobMatch !== null) {
     const job = app.job(jobMatch[1]);
     if (job === undefined) {
-      writeJson(res, 404, { error: "任务不存在或已过期" });
+      writeJson2(res, 404, { error: "任务不存在或已过期" });
       return;
     }
-    writeJson(res, 200, job);
+    writeJson2(res, 200, job);
     return;
   }
   const detailMatch = /^\/api\/suppliers\/([^/]+)$/.exec(path);
   if (method === "GET" && detailMatch !== null) {
     const detail = app.supplierDetail(decodeURIComponent(detailMatch[1]));
     if (detail === undefined) {
-      writeJson(res, 404, { error: "供应商不存在" });
+      writeJson2(res, 404, { error: "供应商不存在" });
       return;
     }
-    writeJson(res, 200, detail);
+    writeJson2(res, 200, detail);
     return;
   }
   if (method === "GET" && path === "/api/keys") {
-    writeJson(res, 200, { keys: app.keys.list(), requireApiKey: app.keys.requireApiKey });
+    writeJson2(res, 200, { keys: app.keys.list(), requireApiKey: app.keys.requireApiKey });
     return;
   }
   if (method === "POST" && path === "/api/keys") {
     const body = await readBody(req);
     const entry = app.keys.create(str(body.name));
     app.afterCatalogChange();
-    writeJson(res, 200, { entry: { ...entry, masked: entry.key.slice(0, 6) + "…" + entry.key.slice(-4) } });
+    writeJson2(res, 200, { entry: { ...entry, masked: entry.key.slice(0, 6) + "…" + entry.key.slice(-4) } });
     return;
   }
   if (method === "POST" && path === "/api/keys/toggle") {
     const body = await readBody(req);
     const ok = app.keys.setActive(str(body.id), bool(body.isActive));
     app.afterCatalogChange();
-    writeJson(res, 200, { ok });
+    writeJson2(res, 200, { ok });
     return;
   }
   if (method === "POST" && path === "/api/keys/delete") {
     const body = await readBody(req);
     const ok = app.keys.remove(str(body.id));
     app.afterCatalogChange();
-    writeJson(res, 200, { ok });
+    writeJson2(res, 200, { ok });
     return;
   }
   if (method === "POST" && path === "/api/settings") {
@@ -805,25 +1137,25 @@ async function handleAdmin(deps, req, res, url) {
     if (body.port !== undefined) {
       const port = Number(body.port);
       if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
-        writeJson(res, 400, { error: "端口非法" });
+        writeJson2(res, 400, { error: "端口非法" });
         return;
       }
       app.settings.setPort(port);
       const actual = await deps.rebindPort(port);
       app.afterCatalogChange();
-      writeJson(res, 200, { ok: true, port: actual, settings: app.settingsView() });
+      writeJson2(res, 200, { ok: true, port: actual, settings: app.settingsView() });
       return;
     }
     app.afterCatalogChange();
-    writeJson(res, 200, { ok: true, settings: app.settingsView() });
+    writeJson2(res, 200, { ok: true, settings: app.settingsView() });
     return;
   }
   if (method === "POST" && path === "/api/opencode/sync") {
-    writeJson(res, 200, { ok: true, opencode: app.syncOpencode(true) });
+    writeJson2(res, 200, { ok: true, opencode: app.syncOpencode(true) });
     return;
   }
   if (method === "GET" && path === "/api/tps") {
-    writeJson(res, 200, app.tps.snapshot());
+    writeJson2(res, 200, app.tps.snapshot());
     return;
   }
   if (method === "POST" && path === "/api/tps/watch") {
@@ -835,11 +1167,11 @@ async function handleAdmin(deps, req, res, url) {
       if (url2.protocol !== "http:" && url2.protocol !== "https:")
         throw new Error("bad protocol");
     } catch {
-      writeJson(res, 400, { error: "origin 不是合法的 http(s) 地址" });
+      writeJson2(res, 400, { error: "origin 不是合法的 http(s) 地址" });
       return;
     }
     app.tps.watchSession({ origin, sessionId, title: str(body.title).trim() || null });
-    writeJson(res, 200, { ok: true, tps: app.tps.snapshot() });
+    writeJson2(res, 200, { ok: true, tps: app.tps.snapshot() });
     return;
   }
   const supplierOp = /^\/api\/suppliers\/([^/]+)\/(.+)$/.exec(path);
@@ -847,7 +1179,7 @@ async function handleAdmin(deps, req, res, url) {
     const id = decodeURIComponent(supplierOp[1]);
     const op = supplierOp[2];
     if (app.runtimeById(id) === undefined) {
-      writeJson(res, 404, { error: "供应商不存在" });
+      writeJson2(res, 404, { error: "供应商不存在" });
       return;
     }
     const body = await readBody(req);
@@ -856,53 +1188,53 @@ async function handleAdmin(deps, req, res, url) {
       case "enabled":
         app.config.setEnabled(id, bool(body.enabled));
         sync();
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       case "alias": {
         const alias = str(body.alias).trim();
         if (alias !== "") {
           const conflict = app.runtimes.find((r) => r.module.id !== id && app.aliasOf(r.module.id) === alias);
           if (conflict !== undefined) {
-            writeJson(res, 409, { error: `别名 ${alias} 已被 ${conflict.module.id} 占用` });
+            writeJson2(res, 409, { error: `别名 ${alias} 已被 ${conflict.module.id} 占用` });
             return;
           }
         }
         app.config.setAlias(id, alias);
         sync();
-        writeJson(res, 200, { ok: true, alias: app.aliasOf(id) });
+        writeJson2(res, 200, { ok: true, alias: app.aliasOf(id) });
         return;
       }
       case "accounts/remove":
         app.creds.remove(id, str(body.uid));
         app.config.clearCredits(id, str(body.uid));
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       case "pool-order":
         app.config.setPoolOrder(id, strArray(body.uids));
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       case "models/toggle":
         app.config.setModelEnabled(id, str(body.id), bool(body.enabled));
         sync();
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       case "models/all":
         app.config.setAllModelsEnabled(id, bool(body.enabled), app.modelViews(id).map((m) => m.id));
         sync();
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       case "models/custom":
         app.config.addCustomModel(id, str(body.id));
         sync();
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       case "models/custom/remove":
         app.config.removeCustomModel(id, str(body.id));
         sync();
-        writeJson(res, 200, { ok: true });
+        writeJson2(res, 200, { ok: true });
         return;
       default:
-        writeJson(res, 404, { error: `未知操作 ${op}` });
+        writeJson2(res, 404, { error: `未知操作 ${op}` });
         return;
     }
   }
@@ -910,22 +1242,22 @@ async function handleAdmin(deps, req, res, url) {
     const body = await readBody(req);
     const name = str(body.name);
     if (name.trim() === "") {
-      writeJson(res, 400, { error: "组合名不能为空" });
+      writeJson2(res, 400, { error: "组合名不能为空" });
       return;
     }
     app.combos.set(name, strArray(body.targets));
     app.afterCatalogChange();
-    writeJson(res, 200, { ok: true, combo: app.resolveCombo(name) });
+    writeJson2(res, 200, { ok: true, combo: app.resolveCombo(name) });
     return;
   }
   if (method === "POST" && path === "/api/combos/remove") {
     const body = await readBody(req);
     const ok = app.combos.remove(str(body.name));
     app.afterCatalogChange();
-    writeJson(res, 200, { ok });
+    writeJson2(res, 200, { ok });
     return;
   }
-  writeJson(res, 404, { error: `未知接口 ${method} ${path}` });
+  writeJson2(res, 404, { error: `未知接口 ${method} ${path}` });
 }
 
 // src/service/server.ts
@@ -1003,22 +1335,22 @@ async function startServer(app, serviceToken, adminPort) {
     (async () => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (bearer(req) !== serviceToken) {
-        writeJson(res, 401, { error: "unauthorized" });
+        writeJson2(res, 401, { error: "unauthorized" });
         return;
       }
       if (req.method === "GET" && url.pathname === "/health") {
-        writeJson(res, 200, { ok: true, version: app.state().version });
+        writeJson2(res, 200, { ok: true, version: app.state().version });
         return;
       }
       if (url.pathname.startsWith("/api/")) {
         try {
           await handleAdmin({ app, rebindPort }, req, res, url);
         } catch (err) {
-          writeJson(res, 500, { error: err.message });
+          writeJson2(res, 500, { error: err.message });
         }
         return;
       }
-      writeJson(res, 404, { error: "not found" });
+      writeJson2(res, 404, { error: "not found" });
     })();
   });
   let publicServer = null;
@@ -1035,28 +1367,28 @@ async function startServer(app, serviceToken, adminPort) {
   };
   await listen(adminServer, adminPort);
   publicServer = http.createServer(publicServerHandler);
-  const publicPort = await listenPublic(publicServer, app.settings.get().port || 3080);
+  const publicPort = await listenPublic(publicServer, app.settings.get().port || DEFAULT_PORT);
   app.endpointPort = publicPort;
   function publicServerHandler(req, res) {
     (async () => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
-        writeJson(res, 200, { ok: true, endpoint: `http://127.0.0.1:${app.endpointPort}/v1` });
+        writeJson2(res, 200, { ok: true, endpoint: `http://127.0.0.1:${app.endpointPort}/v1` });
         return;
       }
       if (!app.keys.verify(bearer(req))) {
-        writeJson(res, 401, { error: { message: "无效的 API Key", type: "invalid_request_error", param: null, code: "invalid_api_key" } });
+        writeJson2(res, 401, { error: { message: "无效的 API Key", type: "invalid_request_error", param: null, code: "invalid_api_key" } });
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/models") {
-        writeJson(res, 200, { object: "list", data: modelList(app) });
+        writeJson2(res, 200, { object: "list", data: modelList(app) });
         return;
       }
       if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
         const parsed = await readJsonBody(req);
         if (!parsed.ok || parsed.body === undefined) {
           console.error(`[ocber-router] /v1/chat/completions body rejected: ${parsed.error ?? "unknown"} | ${parsed.detail ?? ""}`);
-          writeJson(res, 400, {
+          writeJson2(res, 400, {
             error: { message: parsed.error ?? "请求体不合法", type: "invalid_request_error", param: null, code: null }
           });
           return;
@@ -1064,7 +1396,7 @@ async function startServer(app, serviceToken, adminPort) {
         await handleChat(app, res, parsed.body);
         return;
       }
-      writeJson(res, 404, { error: { message: `未知端点 ${req.method} ${url.pathname}`, type: "invalid_request_error", param: null, code: null } });
+      writeJson2(res, 404, { error: { message: `未知端点 ${req.method} ${url.pathname}`, type: "invalid_request_error", param: null, code: null } });
     })();
   }
   return {
@@ -1075,7 +1407,7 @@ async function startServer(app, serviceToken, adminPort) {
   };
 }
 async function listenPublic(server, preferred) {
-  const base = Number.isInteger(preferred) && preferred > 0 ? preferred : 3080;
+  const base = Number.isInteger(preferred) && preferred > 0 ? preferred : DEFAULT_PORT;
   for (let i = 0;i < PORT_FALLBACK_TRIES; i += 1) {
     const candidate = base + i;
     if (candidate >= 65536)
@@ -1954,338 +2286,6 @@ class AccountPool {
   }
 }
 
-// src/service/store.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, join as join2 } from "node:path";
-import { homedir } from "node:os";
-import { randomBytes as randomBytes2 } from "node:crypto";
-function resolveDataDir() {
-  const override = (process.env.OCBER_DATA_DIR ?? "").trim();
-  if (override !== "")
-    return override;
-  return join2(homedir(), ".ocber-router");
-}
-function writeJson2(file, value) {
-  try {
-    const dir = dirname2(file);
-    if (dir !== "" && dir !== ".")
-      mkdirSync2(dir, { recursive: true });
-    const tmp = `${file}.tmp`;
-    writeFileSync2(tmp, JSON.stringify(value, null, 2), { mode: 384 });
-    renameSync2(tmp, file);
-  } catch {}
-}
-function readJson(file) {
-  try {
-    return JSON.parse(readFileSync2(file, "utf8"));
-  } catch {
-    return;
-  }
-}
-
-class CredentialStore {
-  file;
-  data = {};
-  constructor(dataDir) {
-    this.file = join2(dataDir, "credentials.json");
-    const raw = readJson(this.file);
-    if (raw !== undefined && typeof raw === "object" && raw !== null)
-      this.data = raw;
-  }
-  list(supplierId) {
-    const bucket = this.data[supplierId];
-    return bucket === undefined ? [] : Object.keys(bucket);
-  }
-  get(supplierId, uid) {
-    return this.data[supplierId]?.[uid];
-  }
-  save(supplierId, uid, blob) {
-    const bucket = this.data[supplierId] ?? {};
-    bucket[uid] = blob;
-    this.data[supplierId] = bucket;
-    writeJson2(this.file, this.data);
-  }
-  remove(supplierId, uid) {
-    const bucket = this.data[supplierId];
-    if (bucket === undefined || bucket[uid] === undefined)
-      return;
-    delete bucket[uid];
-    writeJson2(this.file, this.data);
-  }
-}
-var DEFAULT_SUPPLIER_CONFIG = () => ({
-  enabled: true,
-  alias: "",
-  disabled: [],
-  custom: [],
-  poolOrder: [],
-  poolStrategy: "fallback",
-  credits: {}
-});
-
-class SupplierConfigStore {
-  file;
-  bySupplier = new Map;
-  constructor(dataDir) {
-    this.file = join2(dataDir, "supplier-config.json");
-    const raw = readJson(this.file);
-    for (const [id, cfg] of Object.entries(raw?.suppliers ?? {})) {
-      this.bySupplier.set(id, {
-        enabled: typeof cfg.enabled === "boolean" ? cfg.enabled : true,
-        alias: typeof cfg.alias === "string" ? cfg.alias : "",
-        disabled: Array.isArray(cfg.disabled) ? cfg.disabled.filter((m) => typeof m === "string") : [],
-        custom: Array.isArray(cfg.custom) ? cfg.custom.filter((m) => typeof m === "string") : [],
-        poolOrder: Array.isArray(cfg.poolOrder) ? cfg.poolOrder.filter((u) => typeof u === "string") : [],
-        poolStrategy: cfg.poolStrategy === "round-robin" ? "round-robin" : "fallback",
-        credits: readCredits(cfg.credits)
-      });
-    }
-  }
-  get(id) {
-    let cfg = this.bySupplier.get(id);
-    if (cfg === undefined) {
-      cfg = DEFAULT_SUPPLIER_CONFIG();
-      this.bySupplier.set(id, cfg);
-    }
-    return cfg;
-  }
-  setAlias(id, alias) {
-    this.get(id).alias = (alias ?? "").trim();
-    this.save();
-  }
-  setEnabled(id, enabled) {
-    this.get(id).enabled = enabled;
-    this.save();
-  }
-  setPoolOrder(id, uids) {
-    this.get(id).poolOrder = [...new Set(uids)];
-    this.save();
-  }
-  setPoolStrategy(id, strategy) {
-    this.get(id).poolStrategy = strategy === "round-robin" ? "round-robin" : "fallback";
-    this.save();
-  }
-  setModelEnabled(id, modelId, enabled) {
-    const cfg = this.get(id);
-    cfg.disabled = enabled ? cfg.disabled.filter((m) => m !== modelId) : [...new Set([...cfg.disabled, modelId])];
-    this.save();
-  }
-  setAllModelsEnabled(id, enabled, modelIds) {
-    const cfg = this.get(id);
-    cfg.disabled = enabled ? [] : [...new Set(modelIds)];
-    this.save();
-  }
-  addCustomModel(id, modelId) {
-    const cfg = this.get(id);
-    const clean = modelId.trim();
-    if (clean === "" || cfg.custom.includes(clean))
-      return;
-    cfg.custom.push(clean);
-    this.save();
-  }
-  removeCustomModel(id, modelId) {
-    const cfg = this.get(id);
-    cfg.custom = cfg.custom.filter((m) => m !== modelId);
-    cfg.disabled = cfg.disabled.filter((m) => m !== modelId);
-    this.save();
-  }
-  getCredits(id, uid) {
-    const v = this.get(id).credits[uid];
-    return typeof v === "number" && Number.isFinite(v) ? v : -1;
-  }
-  putCredits(id, uid, reported) {
-    if (typeof reported !== "number" || !Number.isFinite(reported) || reported < 0)
-      return this.getCredits(id, uid);
-    const prev = this.getCredits(id, uid);
-    if (prev === reported)
-      return reported;
-    this.get(id).credits[uid] = reported;
-    this.save();
-    return reported;
-  }
-  clearCredits(id, uid) {
-    const credits = this.get(id).credits;
-    if (credits[uid] === undefined)
-      return;
-    delete credits[uid];
-    this.save();
-  }
-  knownIds() {
-    return [...this.bySupplier.keys()];
-  }
-  save() {
-    const file = { suppliers: {} };
-    for (const [id, cfg] of this.bySupplier)
-      file.suppliers[id] = { ...cfg, credits: { ...cfg.credits } };
-    writeJson2(this.file, file);
-  }
-}
-function readCredits(raw) {
-  const out = {};
-  if (typeof raw !== "object" || raw === null)
-    return out;
-  for (const [uid, v] of Object.entries(raw)) {
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0)
-      out[uid] = v;
-  }
-  return out;
-}
-
-class CombosStore {
-  file;
-  combos = new Map;
-  constructor(dataDir) {
-    this.file = join2(dataDir, "combos.json");
-    const raw = readJson(this.file);
-    for (const [name, targets] of Object.entries(raw?.combos ?? {})) {
-      if (!Array.isArray(targets))
-        continue;
-      this.combos.set(name, targets.filter((t) => typeof t === "string"));
-    }
-  }
-  list() {
-    return [...this.combos.entries()].map(([name, targets]) => ({ name, targets: [...targets] }));
-  }
-  get(name) {
-    return this.combos.get(name);
-  }
-  set(name, targets) {
-    const clean = name.trim();
-    if (clean === "")
-      return;
-    this.combos.set(clean, [...new Set(targets.map((t) => t.trim()).filter((t) => t !== ""))]);
-    this.save();
-  }
-  remove(name) {
-    const ok = this.combos.delete(name);
-    if (ok)
-      this.save();
-    return ok;
-  }
-  save() {
-    writeJson2(this.file, { combos: Object.fromEntries(this.combos) });
-  }
-}
-
-class KeysStore {
-  file;
-  keys = [];
-  require = false;
-  constructor(dataDir) {
-    this.file = join2(dataDir, "keys.json");
-    const raw = readJson(this.file);
-    if (raw !== undefined) {
-      this.keys = Array.isArray(raw.keys) ? raw.keys : [];
-      this.require = !!raw.requireApiKey;
-    }
-  }
-  list() {
-    return this.keys.map((k) => ({ ...k, masked: maskKey(k.key) }));
-  }
-  create(name) {
-    const entry = {
-      id: randomBytes2(6).toString("hex"),
-      name: name.trim() !== "" ? name.trim() : `Key ${this.keys.length + 1}`,
-      key: `ocber-${randomBytes2(24).toString("hex")}`,
-      isActive: true,
-      createdAt: new Date().toISOString()
-    };
-    this.keys.push(entry);
-    this.save();
-    return entry;
-  }
-  remove(id) {
-    const before = this.keys.length;
-    this.keys = this.keys.filter((k) => k.id !== id);
-    if (this.keys.length === before)
-      return false;
-    this.save();
-    return true;
-  }
-  setActive(id, isActive) {
-    const k = this.keys.find((k2) => k2.id === id);
-    if (k === undefined)
-      return false;
-    k.isActive = isActive;
-    this.save();
-    return true;
-  }
-  get requireApiKey() {
-    return this.require;
-  }
-  set requireApiKey(v) {
-    this.require = v;
-    this.save();
-  }
-  verify(bearer2) {
-    if (!this.require)
-      return true;
-    if (bearer2 === undefined || bearer2 === "")
-      return false;
-    return this.keys.some((k) => k.isActive && k.key === bearer2);
-  }
-  firstActiveKey() {
-    return this.keys.find((k) => k.isActive)?.key;
-  }
-  save() {
-    writeJson2(this.file, { keys: this.keys, requireApiKey: this.require });
-  }
-}
-function maskKey(k) {
-  if (k.length <= 10)
-    return k;
-  return `${k.slice(0, 6)}${"•".repeat(Math.min(k.length - 10, 12))}${k.slice(-4)}`;
-}
-var DEFAULT_PORT = 3080;
-
-class SettingsStore {
-  file;
-  port;
-  opencodeSync;
-  opencodeSignature;
-  opencodeSyncedAt;
-  constructor(dataDir) {
-    this.file = join2(dataDir, "settings.json");
-    const raw = readJson(this.file);
-    const p = Number(raw?.port);
-    this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
-    this.opencodeSync = typeof raw?.opencodeSync === "boolean" ? raw.opencodeSync : true;
-    this.opencodeSignature = typeof raw?.opencodeSignature === "string" ? raw.opencodeSignature : "";
-    this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === "number" ? raw.opencodeSyncedAt : 0;
-  }
-  get() {
-    return {
-      port: this.port,
-      opencodeSync: this.opencodeSync,
-      opencodeSignature: this.opencodeSignature,
-      opencodeSyncedAt: this.opencodeSyncedAt
-    };
-  }
-  setPort(port) {
-    if (!Number.isInteger(port) || port <= 0 || port >= 65536)
-      return;
-    this.port = port;
-    this.save();
-  }
-  setOpencodeSync(enabled) {
-    this.opencodeSync = enabled;
-    this.save();
-  }
-  setOpencodeSyncState(signature, syncedAt) {
-    this.opencodeSignature = signature;
-    this.opencodeSyncedAt = syncedAt;
-    this.save();
-  }
-  save() {
-    writeJson2(this.file, {
-      port: this.port,
-      opencodeSync: this.opencodeSync,
-      opencodeSignature: this.opencodeSignature,
-      opencodeSyncedAt: this.opencodeSyncedAt
-    });
-  }
-}
-
 // src/service/opencode-sync.ts
 import { existsSync, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { createHash as createHash2 } from "node:crypto";
@@ -2767,7 +2767,7 @@ class TpsTracker {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.9";
+var VERSION = "0.1.10";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {
