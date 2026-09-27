@@ -308,6 +308,8 @@ let noticeTimer: number | null = null
 
 /** TPS 仪表盘状态。 */
 let tps: TpsSnapshot | null = null
+/** TPS 卡片节点：建一次跨重画复用（重建会让卡片归零闪一下）。 */
+let tpsCard: HTMLElement | null = null
 let watchedKey = ''
 let currentSession: { id: string; title: string } | null = null
 let peakTps = 0
@@ -693,10 +695,15 @@ function renderOverview(): HTMLElement {
   wrap.style.flexDirection = 'column'
   wrap.style.gap = '12px'
 
-  // TPS 仪表盘置顶；下面才是路由用量看板（周期/汇总/趋势）
-  tpsRefs = null
-  wrap.append(buildTpsCard())
-  void pollTps()
+  // TPS 仪表盘置顶；下面才是路由用量看板（周期/汇总/趋势）。
+  // 卡片只建一次，之后重画只是复用同一个节点 —— 否则每次自动刷新都会归零闪一下。
+  if (tpsCard === null) {
+    tpsCard = buildTpsCard()
+    void pollTps()
+  } else {
+    renderTps()
+  }
+  wrap.append(tpsCard)
 
   const periodLabels: Array<[Period, string]> = [
     ['today', copy.periodToday],
