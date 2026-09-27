@@ -1091,12 +1091,6 @@ async function listenPublic(server, preferred) {
 }
 function modelList(app) {
   const out = new Map;
-  for (const r of app.activeRuntimes()) {
-    for (const m of app.enabledModelIds(r.module.id)) {
-      const id = `${app.aliasOf(r.module.id)}/${m}`;
-      out.set(id, { id, object: "model", created: 0, owned_by: r.module.id });
-    }
-  }
   for (const combo of app.comboViews()) {
     if (combo.targets.some((t) => t.ok)) {
       out.set(combo.name, { id: combo.name, object: "model", created: 0, owned_by: "combo" });
@@ -2773,7 +2767,7 @@ class TpsTracker {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.8";
+var VERSION = "0.1.9";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {

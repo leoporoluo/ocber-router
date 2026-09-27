@@ -215,20 +215,14 @@ async function listenPublic(server: http.Server, preferred: number): Promise<num
 }
 
 /**
- * /v1/models：只暴露 `别名/模型` 全名 + 组合名。
+ * /v1/models：只列**组合**（与服务端写进 OpenCode 的 provider 模型表同口径）。
  *
- * 不再输出「裸模型名」：同一份列表同时喂给 OpenCode 的 provider 配置，
- * 裸名与全名并存会让模型选择里每个模型出现两次（2026-09-27 反馈）。
- * 需要裸名调用的客户端仍可直接请求（路由层兼容），只是不列出。
+ * 之前还会列 `别名/模型` 全名，结果同一个模型会出现两次（组合名一次、全名一次），
+ * 外部 agent 拉模型列表时看到重复（2026-09-27 反馈）。路由层仍接受
+ * `别名/模型` 与裸模型名直接调用，只是不再对外列出。
  */
 function modelList(app: App): Array<{ id: string; object: string; created: number; owned_by: string }> {
   const out = new Map<string, { id: string; object: string; created: number; owned_by: string }>()
-  for (const r of app.activeRuntimes()) {
-    for (const m of app.enabledModelIds(r.module.id)) {
-      const id = `${app.aliasOf(r.module.id)}/${m}`
-      out.set(id, { id, object: 'model', created: 0, owned_by: r.module.id })
-    }
-  }
   for (const combo of app.comboViews()) {
     if (combo.targets.some((t) => t.ok)) {
       out.set(combo.name, { id: combo.name, object: 'model', created: 0, owned_by: 'combo' })

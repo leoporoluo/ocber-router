@@ -137,7 +137,8 @@ try {
 
   const models2 = await (await fetch(`${base}/v1/models`)).json()
   check('combo listed in /v1/models', models2.data.some((m) => m.id === 'smoke-combo'))
-  check('no alias models listed without accounts', !models2.data.some((m) => m.id.startsWith('codebuddy/')), JSON.stringify(models2.data.map((m) => m.id)))
+  check('no alias models listed (combos only)', !models2.data.some((m) => m.id.includes('/')), JSON.stringify(models2.data.map((m) => m.id)))
+  check('exactly the combos are listed', models2.data.length === 1 && models2.data[0].id === 'smoke-combo', JSON.stringify(models2.data.map((m) => m.id)))
 
   // ---- 请求体：大 body 与 gzip 都要能解析 ----
   const bigText = 'x'.repeat(9 * 1024 * 1024)
