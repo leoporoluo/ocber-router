@@ -2231,6 +2231,7 @@ class SettingsStore {
   port;
   opencodeSync;
   opencodeSyncMode;
+  opencodeSyncModeVersion;
   opencodeSignature;
   opencodeSyncedAt;
   constructor(dataDir) {
@@ -2239,9 +2240,11 @@ class SettingsStore {
     const p = Number(raw?.port);
     this.port = Number.isInteger(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
     this.opencodeSync = typeof raw?.opencodeSync === "boolean" ? raw.opencodeSync : true;
-    this.opencodeSyncMode = raw?.opencodeSyncMode === "combos" ? "combos" : "models";
+    const modeVersion = Number(raw?.opencodeSyncModeVersion ?? 0);
+    this.opencodeSyncMode = modeVersion >= 1 && raw?.opencodeSyncMode === "models" ? "models" : "combos";
     this.opencodeSignature = typeof raw?.opencodeSignature === "string" ? raw.opencodeSignature : "";
     this.opencodeSyncedAt = typeof raw?.opencodeSyncedAt === "number" ? raw.opencodeSyncedAt : 0;
+    this.opencodeSyncModeVersion = Math.max(1, modeVersion);
   }
   get() {
     return {
@@ -2263,7 +2266,8 @@ class SettingsStore {
     this.save();
   }
   setOpencodeSyncMode(mode) {
-    this.opencodeSyncMode = mode === "combos" ? "combos" : "models";
+    this.opencodeSyncMode = mode === "models" ? "models" : "combos";
+    this.opencodeSyncModeVersion = 1;
     this.save();
   }
   setOpencodeSyncState(signature, syncedAt) {
@@ -2276,6 +2280,7 @@ class SettingsStore {
       port: this.port,
       opencodeSync: this.opencodeSync,
       opencodeSyncMode: this.opencodeSyncMode,
+      opencodeSyncModeVersion: this.opencodeSyncModeVersion,
       opencodeSignature: this.opencodeSignature,
       opencodeSyncedAt: this.opencodeSyncedAt
     });
@@ -2387,7 +2392,7 @@ function syncOpencode(app, force = false) {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.4";
+var VERSION = "0.1.5";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {

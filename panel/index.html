@@ -99,6 +99,13 @@
         flex-wrap: wrap;
       }
 
+      /* 右侧开关 + 箭头：不换行、不被左侧文字挤压（供应商列表行） */
+      .oc-nowrap {
+        flex-wrap: nowrap;
+        flex: none;
+        align-self: center;
+      }
+
       .oc-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));

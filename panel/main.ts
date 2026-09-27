@@ -134,9 +134,10 @@ const COPY = {
     syncFailed: '同步失败',
     syncMode: '同步内容',
     syncModeAll: '启用模型 + 组合',
-    syncModeCombos: '仅组合',
-    syncModeHint: '同一个模型不再同时以「别名/模型」和裸名出现（避免模型选择里重复）。',
+    syncModeCombos: '仅组合（默认）',
+    syncModeHint: '只有加进组合的模型才写进 provider，模型选择里不会出现一堆用不上的模型。',
     noAccountsModels: '未添加账号：模型暂不参与路由与同步，添加链接后自动恢复。',
+    noAccountsShort: '未添加账号',
     edit: '编辑',
     editCancel: '取消编辑',
     editingCombo: '正在编辑',
@@ -235,9 +236,10 @@ const COPY = {
     syncFailed: 'Sync failed',
     syncMode: 'Contents',
     syncModeAll: 'Enabled models + combos',
-    syncModeCombos: 'Combos only',
-    syncModeHint: 'Each model appears once (as alias/model); bare duplicates are gone.',
+    syncModeCombos: 'Combos only (default)',
+    syncModeHint: 'Only models added to a combo are written to the provider; the picker stays short.',
     noAccountsModels: 'No account yet: these models stay out of routing and sync until a link is added.',
+    noAccountsShort: 'no account',
     edit: 'Edit',
     editCancel: 'Cancel edit',
     editingCombo: 'Editing',
@@ -648,11 +650,11 @@ function renderSupplierList(): HTMLElement {
       el(
         'div',
         'oc-item-sub',
-        `${supplier.alias} · ${supplier.accounts.length} ${copy.accountCount} · ${supplier.enabledModelCount}/${supplier.modelCount} ${copy.modelWord}${supplier.accounts.length === 0 ? ` · ${copy.noAccountsModels}` : ''}`,
+        `${supplier.alias} · ${supplier.accounts.length} ${copy.accountCount} · ${supplier.enabledModelCount}/${supplier.modelCount} ${copy.modelWord}${supplier.accounts.length === 0 ? ` · ${copy.noAccountsShort}` : ''}`,
       ),
     )
     left.append(nameWrap)
-    const right = el('div', 'oc-actions')
+    const right = el('div', 'oc-actions oc-nowrap')
     right.append(mountToggleMini(supplier))
     const open = el('span')
     mountButton(open, {
@@ -1157,8 +1159,8 @@ function renderEndpoint(): HTMLElement {
     label: copy.syncMode,
     value: sync?.mode ?? 'models',
     options: [
-      { id: 'models', label: copy.syncModeAll, hint: copy.syncModeHint },
-      { id: 'combos', label: copy.syncModeCombos },
+      { id: 'combos', label: copy.syncModeCombos, hint: copy.syncModeHint },
+      { id: 'models', label: copy.syncModeAll },
     ],
     onChange: (id) => {
       void api('POST', '/api/settings', { opencodeSyncMode: id })

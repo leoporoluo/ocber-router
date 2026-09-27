@@ -112,7 +112,7 @@ try {
   // ---- opencode provider 同步 ----
   const state2 = await (await admin('/api/state')).json()
   check('opencode sync reported no error', state2.opencode?.error === undefined, String(state2.opencode?.error))
-  check('opencode sync mode default = models', state2.opencode?.mode === 'models', String(state2.opencode?.mode))
+  check('opencode sync mode default = combos', state2.opencode?.mode === 'combos', String(state2.opencode?.mode))
 
   const cfg = readConfig()
   check('existing provider keepme preserved', JSON.stringify(cfg.providers?.keepme) === JSON.stringify(originalProviders.keepme))
@@ -130,9 +130,17 @@ try {
   const cfg2 = readConfig()
   const ids = Object.keys(cfg2.providers?.ocber?.models ?? {})
   check('combo synced into provider models', ids.includes('smoke-combo'), JSON.stringify(ids))
+  check('combos-only mode writes nothing else', ids.length === 1, JSON.stringify(ids))
   check('no bare duplicate of a model id', !ids.includes('glm-5.3'), JSON.stringify(ids))
   check('placeholder "default" filtered out', !ids.includes('codebuddy/default'))
   check('keepme preserved after second sync', JSON.stringify(cfg2.providers?.keepme) === JSON.stringify(originalProviders.keepme))
+
+  // 切到「启用模型 + 组合」再切回，provider 跟随（无账号时仍然只有组合）
+  await admin('/api/settings', { method: 'POST', body: JSON.stringify({ opencodeSyncMode: 'models' }) })
+  await admin('/api/opencode/sync', { method: 'POST' })
+  const cfg3 = readConfig()
+  check('mode switch keeps combos + drops alias models without accounts', Object.keys(cfg3.providers?.ocber?.models ?? {}).join(',') === 'smoke-combo', JSON.stringify(Object.keys(cfg3.providers?.ocber?.models ?? {})))
+  await admin('/api/settings', { method: 'POST', body: JSON.stringify({ opencodeSyncMode: 'combos' }) })
 
   const models2 = await (await fetch(`${base}/v1/models`)).json()
   check('combo listed in /v1/models', models2.data.some((m) => m.id === 'smoke-combo'))
