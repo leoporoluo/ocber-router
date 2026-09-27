@@ -2409,6 +2409,7 @@ class TpsTracker {
   turnSawTokens = false;
   turnStartedAt = null;
   lastCharAt = null;
+  turnSamples = 0;
   activeMs = 0;
   lastTurn = null;
   busy = false;
@@ -2475,6 +2476,7 @@ class TpsTracker {
     this.turnSawTokens = false;
     this.turnStartedAt = null;
     this.lastCharAt = null;
+    this.turnSamples = 0;
     this.activeMs = 0;
     this.lastTurn = null;
     this.busy = false;
@@ -2577,6 +2579,7 @@ class TpsTracker {
     if (messageId !== "")
       this.messageChars.set(messageId, (this.messageChars.get(messageId) ?? 0) + chars);
     this.turnChars += chars;
+    this.turnSamples += 1;
     if (this.lastCharAt !== null && now - this.lastCharAt <= MAX_STREAM_GAP_MS)
       this.activeMs += now - this.lastCharAt;
     this.lastCharAt = now;
@@ -2595,7 +2598,10 @@ class TpsTracker {
     if (this.turnStartedAt === null && this.turnChars === 0)
       return;
     const wallMs = this.turnStartedAt === null ? 0 : now - this.turnStartedAt;
-    const active = Math.max(this.activeMs, this.turnChars > 0 ? 1 : 0);
+    let active = Math.max(this.activeMs, this.turnChars > 0 ? 1 : 0);
+    const chunky = this.turnSamples <= 2 && active < wallMs * 0.5;
+    if (wallMs > 0 && (active < Math.max(100, wallMs * 0.1) || chunky))
+      active = wallMs;
     const tokens = this.turnSawTokens ? this.turnTokens : this.turnChars * this.charsPerToken;
     if (tokens > 0 && active > 0) {
       this.lastTurn = {
@@ -2614,6 +2620,7 @@ class TpsTracker {
     this.turnSawTokens = false;
     this.turnStartedAt = null;
     this.lastCharAt = null;
+    this.turnSamples = 0;
     this.activeMs = 0;
   }
   handleEvent(event, now) {
@@ -2767,7 +2774,7 @@ class TpsTracker {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.13";
+var VERSION = "0.1.14";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {

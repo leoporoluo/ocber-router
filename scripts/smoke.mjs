@@ -193,6 +193,34 @@ try {
   check('tps session id echoed', tps1.sessionId === 'ses_smoke', String(tps1.sessionId))
   sseServer.close()
 
+  // ---- 单块回复：生成时间退化为毫秒级时要用整轮耗时兜底，不能算出几千 tok/s ----
+  const chunkedServer = http.createServer((req, res) => {
+    if (!(req.url ?? '').startsWith('/api/global/event')) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+    const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`)
+    send({ type: 'session.execution.started', data: { sessionID: 'ses_chunk' } })
+    send({ type: 'session.text.delta', data: { sessionID: 'ses_chunk', assistantMessageID: 'msg_c', ordinal: 0, delta: 'x'.repeat(1000) } })
+    setTimeout(() => {
+      send({ type: 'session.step.ended', data: { sessionID: 'ses_chunk', assistantMessageID: 'msg_c', tokens: { output: 250, reasoning: 0 } } })
+      send({ type: 'session.execution.succeeded', data: { sessionID: 'ses_chunk' } })
+    }, 500)
+    req.on('close', () => {})
+  })
+  const chunkedPort = await new Promise((resolve) => chunkedServer.listen(0, '127.0.0.1', () => resolve(chunkedServer.address().port)))
+  await admin('/api/tps/watch', { method: 'POST', body: JSON.stringify({ origin: `http://127.0.0.1:${chunkedPort}`, sessionId: 'ses_chunk', title: 'chunk' }) })
+  await sleep(1200)
+  const tps2 = await (await admin('/api/tps')).json()
+  check(
+    'single-chunk turn falls back to wall time (not inflated)',
+    tps2.lastTurn !== null && tps2.lastTurn.tokensPerSecond > 0 && tps2.lastTurn.tokensPerSecond < 5000,
+    JSON.stringify(tps2.lastTurn),
+  )
+  chunkedServer.close()
+
   console.log(failures === 0 ? '\nSMOKE OK' : `\nSMOKE FAILED (${failures})`)
 } catch (err) {
   failures++

@@ -69,6 +69,8 @@ export class TpsTracker {
   private turnSawTokens = false
   private turnStartedAt: number | null = null
   private lastCharAt: number | null = null
+  /** 本轮收到过几次字符样本（判断「整段一次到齐」）。 */
+  private turnSamples = 0
   private activeMs = 0
   private lastTurn: TpsTurn | null = null
 
@@ -144,6 +146,7 @@ export class TpsTracker {
     this.turnSawTokens = false
     this.turnStartedAt = null
     this.lastCharAt = null
+    this.turnSamples = 0
     this.activeMs = 0
     this.lastTurn = null
     this.busy = false
@@ -238,6 +241,7 @@ export class TpsTracker {
     if (this.samples.length > SAMPLE_LIMIT) this.samples.splice(0, this.samples.length - SAMPLE_LIMIT)
     if (messageId !== '') this.messageChars.set(messageId, (this.messageChars.get(messageId) ?? 0) + chars)
     this.turnChars += chars
+    this.turnSamples += 1
     // 生成时间：跳过超过 1s 的间隔（工具/重试/等用户）
     if (this.lastCharAt !== null && now - this.lastCharAt <= MAX_STREAM_GAP_MS) this.activeMs += now - this.lastCharAt
     this.lastCharAt = now
@@ -255,7 +259,12 @@ export class TpsTracker {
   private finalizeTurn(now: number): void {
     if (this.turnStartedAt === null && this.turnChars === 0) return
     const wallMs = this.turnStartedAt === null ? 0 : now - this.turnStartedAt
-    const active = Math.max(this.activeMs, this.turnChars > 0 ? 1 : 0)
+    // 生成时间以「字符间隔」累计；但整段一次到齐（单块/极少分片）时它退化成毫秒级，
+    // 直接拿它当分母会算出几千 tok/s 的假值。此时回退用整轮耗时（首字节+生成，
+    // 端到端口径，偏保守但不会被放大）。
+    let active = Math.max(this.activeMs, this.turnChars > 0 ? 1 : 0)
+    const chunky = this.turnSamples <= 2 && active < wallMs * 0.5
+    if (wallMs > 0 && (active < Math.max(100, wallMs * 0.1) || chunky)) active = wallMs
     const tokens = this.turnSawTokens ? this.turnTokens : this.turnChars * this.charsPerToken
     if (tokens > 0 && active > 0) {
       this.lastTurn = {
@@ -274,6 +283,7 @@ export class TpsTracker {
     this.turnSawTokens = false
     this.turnStartedAt = null
     this.lastCharAt = null
+    this.turnSamples = 0
     this.activeMs = 0
   }
 
