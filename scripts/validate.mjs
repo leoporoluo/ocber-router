@@ -29,6 +29,9 @@ if (parsed.ok) {
   const panel = contributes.panel
   check('panel id', panel?.id === 'ocber-router', String(panel?.id))
   check('panel entry declared', typeof panel?.entry === 'string')
+  if (typeof panel?.icon === 'string' && panel.icon.toLowerCase().endsWith('.svg')) {
+    check('panel icon exists', existsSync(join(root, panel.icon)), panel.icon)
+  }
   if (typeof panel?.entry === 'string') {
     const htmlPath = join(root, panel.entry)
     check('panel html exists', existsSync(htmlPath), panel.entry)

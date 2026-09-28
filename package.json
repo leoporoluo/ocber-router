@@ -1,6 +1,6 @@
 {
   "name": "ocber-router",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -19,7 +19,7 @@
       "panel": {
         "id": "ocber-router",
         "name": "OCBer Router",
-        "icon": "route-line",
+        "icon": "icon.svg",
         "entry": "panel/index.html"
       },
       "page": true,

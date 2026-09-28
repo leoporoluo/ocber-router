@@ -158,6 +158,7 @@ node scripts/smoke.mjs     # 拉起服务，验证管理鉴权 / /api/state / /v
 
 ```
 panel/main.ts                     面板（@openchamber/sdk + /ui，中文优先）
+icon.svg                          面板图标（24×24 单色，宿主用主题色 mask 渲染）
 service/main.ts                   服务入口（宿主注入 PORT/TOKEN）
 src/service/app.ts                运行时状态：供应商、目录、任务
 src/service/server.ts             两个回环监听 + 鉴权
