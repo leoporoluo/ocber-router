@@ -1,24 +1,40 @@
 /**
  * 本地服务的 JSON 持久化 —— 凭证 / 供应商配置 / 密钥 / 设置 / 组合。
  *
- * 全部落盘在 `~/.ocber-router/`（可用 OCBER_DATA_DIR 覆盖）。刻意不用
- * SQLite：服务跑在 Electron 的 Node 里，`node:sqlite` 是实验特性、跨宿主
- * 版本不稳，而这里的量级（几十个账号、几十个 key）用 JSON 绰绰有余。
+ * 全部落盘在「扩展安装目录」下的 `.data/`（卸载扩展即一并删除）。可用
+ * OCBER_DATA_DIR 覆盖。刻意不用 SQLite：服务跑在 Electron 的 Node 里，
+ * `node:sqlite` 是实验特性、跨宿主版本不稳，而这里的量级（几十个账号、
+ * 几十个 key）用 JSON 绰绰有余。
  *
  * 写盘一律「临时文件 + rename」原子替换，跟 dsh-router 的落盘风格一致。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 
 import type { CredentialStoreLike, SupplierConfigStoreLike } from './suppliers/codebuddy/contract.ts'
+
+/**
+ * 扩展根目录。从文件自身位置向上查找含 package.json 的目录，扩展装在
+ * 哪儿都能正确定位（产物为 `service/main.js`，源码为 `src/service/store.ts`）。
+ */
+function resolveExtensionDir(): string {
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 5; i += 1) {
+    if (existsSync(join(dir, 'package.json'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return dirname(dirname(fileURLToPath(import.meta.url)))
+}
 
 /** 数据目录。 */
 export function resolveDataDir(): string {
   const override = (process.env.OCBER_DATA_DIR ?? '').trim()
   if (override !== '') return override
-  return join(homedir(), '.ocber-router')
+  return join(resolveExtensionDir(), '.data')
 }
 
 /** 原子写 JSON。 */

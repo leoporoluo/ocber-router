@@ -3,15 +3,27 @@ import http from "node:http";
 import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 
 // src/service/store.ts
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+function resolveExtensionDir() {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0;i < 5; i += 1) {
+    if (existsSync(join(dir, "package.json")))
+      return dir;
+    const parent = dirname(dir);
+    if (parent === dir)
+      break;
+    dir = parent;
+  }
+  return dirname(dirname(fileURLToPath(import.meta.url)));
+}
 function resolveDataDir() {
   const override = (process.env.OCBER_DATA_DIR ?? "").trim();
   if (override !== "")
     return override;
-  return join(homedir(), ".ocber-router");
+  return join(resolveExtensionDir(), ".data");
 }
 function writeJson(file, value) {
   try {
@@ -2287,13 +2299,13 @@ class AccountPool {
 }
 
 // src/service/opencode-sync.ts
-import { existsSync, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { createHash as createHash2 } from "node:crypto";
 import { dirname as dirname3, join as join3 } from "node:path";
-import { homedir as homedir2 } from "node:os";
+import { homedir } from "node:os";
 var OPENCODE_PROVIDER_ID = "ocber";
 function opencodeConfigPath() {
-  return join3(homedir2(), ".config", "opencode", "opencode.json");
+  return join3(homedir(), ".config", "opencode", "opencode.json");
 }
 var HIDDEN_MODEL_IDS = new Set(["default"]);
 function buildModels(app) {
@@ -2317,7 +2329,7 @@ function syncOpencode(app, force = false) {
   const view = (extra) => ({
     enabled: settings.opencodeSync,
     path,
-    exists: existsSync(path),
+    exists: existsSync2(path),
     syncedAt: settings.opencodeSyncedAt,
     modelCount: 0,
     ...extra
@@ -2332,7 +2344,7 @@ function syncOpencode(app, force = false) {
   }
   try {
     let config;
-    if (existsSync(path)) {
+    if (existsSync2(path)) {
       const raw = readFileSync3(path, "utf8");
       const parsed = raw.trim() === "" ? {} : JSON.parse(raw);
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
