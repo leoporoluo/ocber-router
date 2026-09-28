@@ -1,7 +1,7 @@
 /**
  * 本地服务的 JSON 持久化 —— 凭证 / 供应商配置 / 密钥 / 设置 / 组合。
  *
- * 全部落盘在「扩展安装目录」下的 `.data/`（卸载扩展即一并删除）。可用
+ * 全部落盘在「扩展安装目录」下的 `data/`（卸载扩展即一并删除）。可用
  * OCBER_DATA_DIR 覆盖。刻意不用 SQLite：服务跑在 Electron 的 Node 里，
  * `node:sqlite` 是实验特性、跨宿主版本不稳，而这里的量级（几十个账号、
  * 几十个 key）用 JSON 绰绰有余。
@@ -34,7 +34,7 @@ function resolveExtensionDir(): string {
 export function resolveDataDir(): string {
   const override = (process.env.OCBER_DATA_DIR ?? '').trim()
   if (override !== '') return override
-  return join(resolveExtensionDir(), '.data')
+  return join(resolveExtensionDir(), 'data')
 }
 
 /** 原子写 JSON。 */

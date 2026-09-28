@@ -23,7 +23,7 @@ function resolveDataDir() {
   const override = (process.env.OCBER_DATA_DIR ?? "").trim();
   if (override !== "")
     return override;
-  return join(resolveExtensionDir(), ".data");
+  return join(resolveExtensionDir(), "data");
 }
 function writeJson(file, value) {
   try {

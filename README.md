@@ -131,7 +131,7 @@ curl -X POST http://127.0.0.1:20128/v1/chat/completions \
 
 ## 数据目录
 
-扩展安装目录下的 `.data/`（可用 `OCBER_DATA_DIR` 覆盖）。数据随扩展走，卸载扩展即一并删除：
+扩展安装目录下的 `data/`（可用 `OCBER_DATA_DIR` 覆盖）。数据随扩展走，卸载扩展即一并删除：
 
 ```
 credentials.json       供应商凭证（不透明 blob）
