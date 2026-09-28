@@ -19,6 +19,19 @@ interface ChatBody {
   [key: string]: unknown
 }
 
+/**
+ * 客户端显式要求的推理等级（OpenCode variant settings → `reasoning_effort`）。
+ * 只放行上游认得的档位；其余（含 auto/off/none/空）交给上游默认行为。
+ */
+const REASONING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+function readReasoningLevel(body: ChatBody): string {
+  const raw = body.reasoning_effort ?? body.reasoningEffort
+  if (typeof raw !== 'string') return 'auto'
+  const level = raw.trim().toLowerCase()
+  return REASONING_LEVELS.has(level) ? level : 'auto'
+}
+
 export function writeJson(res: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value)
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) })
@@ -283,6 +296,8 @@ export async function handleChat(app: App, res: ServerResponse, body: ChatBody):
   const stream = body.stream === true
   const messages = body.messages
   const rawBody = JSON.stringify(body)
+  // 客户端（OpenCode 变体 / 直连调用）显式要求的推理等级；auto = 不请求推理。
+  const level = readReasoningLevel(body)
 
   let lastState: AccountState = 'unknown'
   let lastMessage = '没有可用账号'
@@ -307,7 +322,7 @@ export async function handleChat(app: App, res: ServerResponse, body: ChatBody):
       const started = Date.now()
       let result
       try {
-        result = await runtime.module.chatOnce(uid, 'auto', { rawBody, stream: true, model: target.model })
+        result = await runtime.module.chatOnce(uid, level, { rawBody, stream: true, model: target.model })
       } catch (err) {
         runtime.pool.noteFailure(uid, target.model, 'transport', (err as Error).message)
         lastState = 'transport'

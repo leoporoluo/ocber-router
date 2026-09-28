@@ -671,6 +671,14 @@ function top(map) {
 }
 
 // src/service/chat.ts
+var REASONING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+function readReasoningLevel(body) {
+  const raw = body.reasoning_effort ?? body.reasoningEffort;
+  if (typeof raw !== "string")
+    return "auto";
+  const level = raw.trim().toLowerCase();
+  return REASONING_LEVELS.has(level) ? level : "auto";
+}
 function writeJson2(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
@@ -937,6 +945,7 @@ async function handleChat(app, res, body) {
   const stream = body.stream === true;
   const messages = body.messages;
   const rawBody = JSON.stringify(body);
+  const level = readReasoningLevel(body);
   let lastState = "unknown";
   let lastMessage = "没有可用账号";
   for (const target of targets) {
@@ -954,7 +963,7 @@ async function handleChat(app, res, body) {
       const started = Date.now();
       let result;
       try {
-        result = await runtime.module.chatOnce(uid, "auto", { rawBody, stream: true, model: target.model });
+        result = await runtime.module.chatOnce(uid, level, { rawBody, stream: true, model: target.model });
       } catch (err) {
         runtime.pool.noteFailure(uid, target.model, "transport", err.message);
         lastState = "transport";
@@ -2786,7 +2795,7 @@ class TpsTracker {
 }
 
 // src/service/app.ts
-var VERSION = "0.1.14";
+var VERSION = "0.1.16";
 var CATALOG_TTL_MS = 10 * 60 * 1000;
 
 class App {

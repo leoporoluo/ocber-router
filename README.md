@@ -28,6 +28,7 @@ http://127.0.0.1:20128/v1
 | 组合 | 自定义 fallback 链，建好即出现在 `/v1/models`，可直接当模型名用 |
 | 签到 / 积分 | 一键签到所有账号，面板显示剩余积分（核心持久化，重启不丢） |
 | OpenAI 端点 | `/v1/models`、`/v1/chat/completions`（流式透传 + 非流式聚合），可选 API Key 鉴权 |
+| 推理等级 | 客户端显式要求时透传（OpenCode 变体 `settings.reasoningEffort` → `reasoning_effort`）；未要求则不带，避免上游内容过滤 |
 | 用量看板 | 今日 / 24 小时 / 7 天 / 30 天，请求数、成功率、token、耗时与趋势图 |
 | TPS 仪表盘 | 概览置顶：近 5 秒生成速率（tok/s）、上一轮平均、会话 token、事件流状态（服务订阅 OpenChamber 事件流计算，思路来自 openchamber-tps） |
 | OpenCode 同步 | 自动把组合写成 `providers.ocber`（只改这一个键，其余配置原样保留） |
@@ -109,6 +110,11 @@ curl -X POST http://127.0.0.1:20128/v1/chat/completions \
   用每轮 `step.ended` 的真实 token 校准；同一模型/语言跑几轮后大致 ±10%，刚打开面板或
   中途换模型时会偏；工具调用参数的生成不计入）。上一轮平均优先用真实 token；整段
   一次到齐的短回复会用整轮耗时兜底，不再算出几千 tok/s 的假值（`0.1.14`）。
+- **在 Casleo / 配置里调的推理强度（OpenCode 变体）不生效**：变体设置（`variants[].settings.reasoningEffort`）
+  会被 OpenCode 写进请求体的 `reasoning_effort`；`0.1.16` 起本扩展把它透传给上游（白名单
+  `minimal/low/medium/high/xhigh/max`，大小写不敏感；其余值和 `auto/off/none` 一律按「不请求推理」处理）。
+  更早的版本写死 `auto`，会把该字段删掉——low/high/max 三个变体对上游完全一样。实测（`0.1.16`）：
+  未指定时上游不吐推理内容，指定任一档位后 `reasoning_content` 正常返回。
 - **签到或跑了几次请求后积分数字没变**：积分在服务侧有 1 分钟缓存，且面板显示两位
   小数；点一次「刷新」就会拿到最新值。
 - **刷新按钮转个不停**：旧版本会把加载状态画死，`0.1.1` 起已修复（加载中才转）。
